@@ -146,59 +146,97 @@ function removeMarketOrder(
 // 1. 部署合约
 Sequencer sequencer = new Sequencer();
 OrderBook orderBook = new OrderBook();
+Account account = new Account();
 
-// 2. 相互设置授权
+// 2. 配置合约关系
 sequencer.setOrderBook(address(orderBook));
+sequencer.setAccount(address(account));
 orderBook.setSequencer(address(sequencer));
+orderBook.setAccount(address(account));
+account.setSequencer(address(sequencer));
+account.setOrderBook(address(orderBook));
 
-// 3. 用户提交限价卖单到Sequencer
-bytes32 pair = keccak256("ETH/USDC");
-uint256 orderId = sequencer.placeLimitOrder(
+// 3. 注册交易对
+bytes32 pair = keccak256("WETH/USDC");
+account.registerTradingPair(pair, wethAddress, usdcAddress);
+
+// 4. 用户充值
+account.deposit(wethAddress, 10 ether);
+account.deposit(usdcAddress, 10000 * 10**6);
+
+// 5. 用户提交限价单到 Sequencer（带精度）
+(uint256 requestId1, uint256 orderId1) = sequencer.placeLimitOrder(
     pair,
-    true,   // isAsk
-    2000,   // price
-    10      // amount
+    false,              // bid (买单)
+    2000 * 10**8,      // price with PRICE_DECIMALS
+    1 * 10**8          // amount with AMOUNT_DECIMALS
 );
 
-// 4. 链下计算插入位置（例如：应该插入到价格层级0之后）
-// 链下程序监控Sequencer队列头部
-
-// 5. 任何人都可以将头部订单插入OrderBook
-orderBook.insertOrder(
-    orderId,  // 必须是队列头部
-    0,        // insertAfterPriceLevel (0表示插入到头部)
-    0         // insertAfterOrder (0表示该价格层级头部)
+(uint256 requestId2, uint256 orderId2) = sequencer.placeLimitOrder(
+    pair,
+    false,
+    1950 * 10**8,
+    1 * 10**8
 );
 
-// 订单现在已经在OrderBook中，并已从Sequencer中移除
+(uint256 requestId3, uint256 orderId3) = sequencer.placeLimitOrder(
+    pair,
+    false,
+    1900 * 10**8,
+    1 * 10**8
+);
+
+// 6. 链下 Matcher 计算插入位置
+// Matcher 监控 Sequencer 队列，计算每个订单的正确插入位置
+// 对于 bid（买单），价格从高到低排序：2000 > 1950 > 1900
+
+// 7. Matcher 批量处理请求
+uint256[] memory orderIds = new uint256[](3);
+orderIds[0] = orderId1;
+orderIds[1] = orderId2;
+orderIds[2] = orderId3;
+
+uint256[] memory insertAfterPriceLevels = new uint256[](3);
+insertAfterPriceLevels[0] = 0;  // 2000 插入到 bid 头部（创建新价格层级）
+insertAfterPriceLevels[1] = 1;  // 1950 插入到价格层级 1 之后
+insertAfterPriceLevels[2] = 2;  // 1900 插入到价格层级 2 之后
+
+uint256[] memory insertAfterOrders = new uint256[](3);
+insertAfterOrders[0] = 0;  // 在新价格层级的头部
+insertAfterOrders[1] = 0;  // 在新价格层级的头部
+insertAfterOrders[2] = 0;  // 在新价格层级的头部
+
+orderBook.batchProcessRequests(
+    orderIds,
+    insertAfterPriceLevels,
+    insertAfterOrders
+);
+
+// 订单现在已经在 OrderBook 中，资金已锁定，并已从 Sequencer 队列中移除
 ```
 
-### 提交并插入市价单
-
-```solidity
-// 1. 提交市价买单到Sequencer
-uint256 marketOrderId = sequencer.placeMarketOrder(
-    pair,
-    false,  // isBid
-    5       // amount
-);
-
-// 2. 插入到OrderBook
-orderBook.insertMarketOrder(
-    marketOrderId,  // 必须是队列头部
-    0               // insertAfterOrder (0表示插入到头部)
-);
-```
+**关键点**:
+- `insertAfterPriceLevel = 0` 表示在该价格的订单之前插入（如果是第一个订单，则创建新的价格层级在头部）
+- `insertAfterPriceLevel = N` 表示在价格层级 N 之后插入（如果价格相同则插入到同一层级，否则创建新层级）
+- `insertAfterOrder = 0` 表示插入到该价格层级的头部
+- `insertAfterOrder = M` 表示在订单 M 之后插入（同一价格层级内按时间排序）
 
 ### 删除订单
 
 ```solidity
-// 删除限价单
-orderBook.removeOrder(pair, orderId, true);
+// 用户请求删除订单（通过 Sequencer 确保 FIFO）
+uint256 removeRequestId = sequencer.requestRemoveOrder(orderId);
 
-// 删除市价单
-orderBook.removeMarketOrder(pair, marketOrderId, false);
+// Matcher 会自动处理这个移除请求
+// 当 removeRequestId 成为队列头部时，Matcher 调用：
+// orderBook.removeOrder(orderId)
+// 订单被移除，锁定资金解锁返还给用户
 ```
+
+**注意**:
+- 订单移除也必须通过 Sequencer 队列，遵循 FIFO 原则
+- 不能直接调用 `orderBook.removeOrder()`，该函数只能由 OrderBook 自己调用
+- 这样设计防止了移除请求的抢跑（front-running）
 
 ## 关键设计要点
 
