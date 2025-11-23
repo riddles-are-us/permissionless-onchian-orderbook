@@ -28,16 +28,16 @@ export default function App() {
   } = useSequencer();
 
   useRealtimeUpdates({
-    onOrderPlaced: (data) => {
-      console.log('📌 Order placed:', data);
+    onOrderInserted: (data) => {
+      console.log('📌 Order inserted:', data);
       setTimeout(() => refreshOrderbook(), 1000);
     },
     onOrderRemoved: (data) => {
       console.log('🗑️ Order removed:', data);
       setTimeout(() => refreshOrderbook(), 1000);
     },
-    onOrderRequested: (data) => {
-      console.log('📝 Order requested:', data);
+    onPlaceOrderRequested: (data) => {
+      console.log('📝 Place order requested:', data);
       setTimeout(() => refreshSequencer(), 1000);
     },
   });

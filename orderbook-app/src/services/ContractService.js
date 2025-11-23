@@ -178,13 +178,13 @@ class ContractService {
       throw new Error('Contract service not initialized');
     }
 
-    this.orderbook.on('OrderPlaced', (orderId, trader, tradingPair, isAsk, price, amount) => {
+    // OrderBook.OrderInserted(tradingPair, orderId, isAsk, price, amount)
+    this.orderbook.on('OrderInserted', (tradingPair, orderId, isAsk, price, amount) => {
       onEvent({
-        type: 'OrderPlaced',
+        type: 'OrderInserted',
         data: {
-          orderId: orderId.toString(),
-          trader,
           tradingPair,
+          orderId: orderId.toString(),
           isAsk,
           price: price.toString(),
           amount: amount.toString(),
@@ -192,27 +192,31 @@ class ContractService {
       });
     });
 
-    this.orderbook.on('OrderRemoved', (orderId, trader, tradingPair) => {
+    // OrderBook.OrderRemoved(tradingPair, orderId)
+    this.orderbook.on('OrderRemoved', (tradingPair, orderId) => {
       onEvent({
         type: 'OrderRemoved',
         data: {
-          orderId: orderId.toString(),
-          trader,
           tradingPair,
+          orderId: orderId.toString(),
         },
       });
     });
 
-    this.sequencer.on('OrderRequested', (requestId, trader, tradingPair, isAsk, price, amount) => {
+    // Sequencer.PlaceOrderRequested(requestId, orderId, tradingPair, trader, orderType, isAsk, price, amount, timestamp)
+    this.sequencer.on('PlaceOrderRequested', (requestId, orderId, tradingPair, trader, orderType, isAsk, price, amount, timestamp) => {
       onEvent({
-        type: 'OrderRequested',
+        type: 'PlaceOrderRequested',
         data: {
           requestId: requestId.toString(),
-          trader,
+          orderId: orderId.toString(),
           tradingPair,
+          trader,
+          orderType: parseInt(orderType),
           isAsk,
           price: price.toString(),
           amount: amount.toString(),
+          timestamp: parseInt(timestamp),
         },
       });
     });

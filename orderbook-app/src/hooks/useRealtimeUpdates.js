@@ -1,15 +1,15 @@
 import { useEffect, useCallback } from 'react';
 import contractService from '../services/ContractService';
 
-export function useRealtimeUpdates({ onOrderPlaced, onOrderRemoved, onOrderRequested }) {
+export function useRealtimeUpdates({ onOrderInserted, onOrderRemoved, onPlaceOrderRequested }) {
   const handleEvent = useCallback(
     (event) => {
       console.log('📡 Received event:', event.type);
 
       switch (event.type) {
-        case 'OrderPlaced':
-          if (onOrderPlaced) {
-            onOrderPlaced(event.data);
+        case 'OrderInserted':
+          if (onOrderInserted) {
+            onOrderInserted(event.data);
           }
           break;
         case 'OrderRemoved':
@@ -17,16 +17,16 @@ export function useRealtimeUpdates({ onOrderPlaced, onOrderRemoved, onOrderReque
             onOrderRemoved(event.data);
           }
           break;
-        case 'OrderRequested':
-          if (onOrderRequested) {
-            onOrderRequested(event.data);
+        case 'PlaceOrderRequested':
+          if (onPlaceOrderRequested) {
+            onPlaceOrderRequested(event.data);
           }
           break;
         default:
           console.log('Unknown event type:', event.type);
       }
     },
-    [onOrderPlaced, onOrderRemoved, onOrderRequested]
+    [onOrderInserted, onOrderRemoved, onPlaceOrderRequested]
   );
 
   useEffect(() => {
