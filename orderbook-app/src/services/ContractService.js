@@ -41,13 +41,17 @@ class ContractService {
 
   async getTradingPairData() {
     try {
-      const data = await this.orderbook.getTradingPairData(this.pairId);
+      const data = await this.orderbook.orderBooks(this.pairId);
 
       return {
-        bidHead: data[0].toString(),
-        askHead: data[1].toString(),
-        lastPrice: data[2].toString(),
-        volume24h: data[3].toString(),
+        askHead: data[0].toString(),
+        askTail: data[1].toString(),
+        bidHead: data[2].toString(),
+        bidTail: data[3].toString(),
+        marketAskHead: data[4].toString(),
+        marketAskTail: data[5].toString(),
+        marketBidHead: data[6].toString(),
+        marketBidTail: data[7].toString(),
       };
     } catch (error) {
       console.error('Failed to get trading pair data:', error);
