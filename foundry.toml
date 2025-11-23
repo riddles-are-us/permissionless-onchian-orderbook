@@ -11,6 +11,7 @@ solc = "0.8.20"
 # 优化
 optimizer = true
 optimizer_runs = 200
+via_ir = true
 
 # EVM 版本
 evm_version = "paris"
@@ -20,3 +21,6 @@ verbosity = 3
 
 # Gas 报告
 gas_reports = ["*"]
+
+# 文件系统权限 - 允许脚本写入 deployments.json
+fs_permissions = [{ access = "read-write", path = "./deployments.json" }]

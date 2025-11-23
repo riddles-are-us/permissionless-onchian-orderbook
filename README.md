@@ -408,20 +408,96 @@ event OrderFilled(
    继续下一轮撮合...
 ```
 
+## Rust Matcher 引擎
+
+### 概述
+
+基于 Rust 的链下撮合引擎，自动从 Sequencer 队列读取订单，计算正确的插入位置，并批量提交到 OrderBook。
+
+### 核心功能
+
+- 🔄 **状态同步**: 从指定区块高度读取合约状态，通过 WebSocket 监听事件
+- 🎯 **智能匹配**: 自动计算每个订单在订单簿中的正确插入位置
+- 📦 **批量处理**: 批量调用 `batchProcessRequests` 节省 gas 成本
+- ⚡ **高性能**: 使用 DashMap 实现线程安全的状态管理
+- 📊 **实时监控**: 完整的日志系统，追踪匹配过程
+
+### 快速测试
+
+```bash
+# 1. 启动 Anvil
+anvil
+
+# 2. 部署合约并准备测试数据
+./test_matcher.sh
+
+# 3. 运行 Matcher
+cd matcher && cargo run -- --log-level debug
+
+# 4. 验证结果
+./verify_results.sh
+```
+
+详细文档：
+- 📖 [Matcher 快速开始](QUICKSTART_MATCHER.md)
+- 📖 [完整测试指南](TESTING_GUIDE.md)
+- 📖 [Matcher 架构说明](matcher/ARCHITECTURE.md)
+
+### 工作流程
+
+```
+1. 启动 → 读取配置 → 连接到区块链 (WebSocket)
+           ↓
+2. 状态同步 → 从指定区块读取历史状态
+           ├─ 加载 Sequencer 队列
+           ├─ 加载订单簿价格层级
+           └─ 构建本地缓存
+           ↓
+3. 匹配循环 (每 3 秒)
+           ├─ 获取队列头部的 N 个请求
+           ├─ 计算每个订单的插入位置
+           │   ├─ 查找价格层级缓存
+           │   ├─ 如未命中，从链上读取
+           │   └─ 根据 Bid/Ask 确定正确位置
+           ├─ 构建批处理交易
+           └─ 提交并等待确认
+           ↓
+4. 事件监听 → 实时更新本地状态
+```
+
 ## 未来扩展
 
 - [x] 订单撮合引擎
 - [x] 部分成交支持
+- [x] Rust Matcher 引擎
+- [x] 批量订单处理
 - [ ] 订单过期时间
 - [ ] 手续费机制
 - [ ] MEV保护机制
-- [ ] 批量订单处理
 - [ ] 价格预言机集成
 
-## 合约文件
+## 项目结构
 
-- `Sequencer.sol` - 订单排序器
-- `OrderBook.sol` - 订单簿核心逻辑
+```
+orderbook/
+├── Sequencer.sol              # 订单排序器
+├── OrderBook.sol              # 订单簿核心
+├── Account.sol                # 账户和资金管理
+├── script/                    # Foundry 部署脚本
+│   ├── Deploy.s.sol          # 合约部署
+│   └── PrepareTest.s.sol     # 测试数据准备
+├── test/                      # Foundry 测试
+│   └── OrderBook.t.sol       # 单元测试
+├── matcher/                   # Rust Matcher 引擎
+│   ├── src/
+│   │   ├── main.rs           # 主入口
+│   │   ├── sync.rs           # 状态同步
+│   │   ├── matcher.rs        # 匹配引擎
+│   │   └── ...
+│   └── abi/                  # 合约 ABI
+├── test_matcher.sh           # 一键测试脚本
+└── *.md                      # 文档
+```
 
 ## 许可证
 

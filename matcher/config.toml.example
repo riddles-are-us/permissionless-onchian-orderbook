@@ -1,0 +1,62 @@
+# OrderBook Matcher 配置示例
+# 复制此文件为 config.toml 并修改相应的值
+
+[network]
+# RPC WebSocket 端点
+# 本地节点: ws://localhost:8545
+# Infura: wss://mainnet.infura.io/ws/v3/YOUR-PROJECT-ID
+rpc_url = "ws://localhost:8545"
+
+# 链 ID
+# 以太坊主网: 1
+# Goerli: 5
+# Sepolia: 11155111
+# Hardhat/Anvil: 31337
+chain_id = 31337
+
+[contracts]
+# Sequencer 合约地址
+sequencer = "0x5991A2dF15A8F6A256D3Ec51E99254Cd3fb576A9"
+
+# OrderBook 合约地址
+orderbook = "0xc7183455a4C133Ae270771860664b6B7ec320bB1"
+
+# Account 合约地址
+account = "0xF62849F9A0B5Bf2913b396098F7c7019b51A820a"
+
+[sync]
+# 初始同步的起始区块
+# 0 = 从最新区块开始
+# 其他值 = 从指定区块开始同步
+start_block = 0
+
+# 是否同步历史区块数据
+# true = 同步从 start_block 到当前的所有数据
+# false = 只监听新事件
+sync_historical = true
+
+[matching]
+# 每批最多处理的请求数（建议 50-200）
+# 数值越大，单次交易 gas 越高，但处理效率越高
+max_batch_size = 100
+
+# 匹配间隔（毫秒）
+# 数值越小，延迟越低，但可能增加无效查询
+matching_interval_ms = 1000
+
+[executor]
+# ⚠️ 警告：不要将真实私钥提交到版本控制！
+# 生产环境应使用环境变量或密钥管理系统
+
+# 执行者私钥（用于发送交易）
+# 示例：Hardhat Account #0
+private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+
+# Gas 价格（gwei）
+# 主网建议值：根据网络拥堵情况调整（通常 10-50）
+# 测试网/本地：1
+gas_price_gwei = 1
+
+# Gas 限制
+# 建议预留充足的 gas
+gas_limit = 5000000

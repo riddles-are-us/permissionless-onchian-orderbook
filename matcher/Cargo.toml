@@ -1,0 +1,35 @@
+[package]
+name = "matcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Ethereum 交互
+ethers = { version = "2.0.11", features = ["abigen", "ws"] }
+tokio = { version = "1.35", features = ["full"] }
+
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 错误处理
+anyhow = "1.0"
+thiserror = "1.0"
+
+# 异步
+async-trait = "0.1"
+
+# 数据结构
+dashmap = "5.5"
+
+# 命令行
+clap = { version = "4.4", features = ["derive"] }
+
+# 其他
+toml = "0.7"
+parking_lot = "0.12"
+futures = "0.3"

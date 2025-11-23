@@ -1,0 +1,19 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Config (contains secrets)
+config.toml
+
+# Logs
+*.log
+
+# OS
+.DS_Store
