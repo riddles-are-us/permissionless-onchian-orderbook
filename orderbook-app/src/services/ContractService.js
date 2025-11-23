@@ -1,11 +1,8 @@
 import { ethers } from 'ethers';
-import { CONFIG } from '../../config';
+import { CONFIG } from '../config';
 import OrderBookABI from '../contracts/OrderBook.json';
 import SequencerABI from '../contracts/Sequencer.json';
 
-/**
- * 合约交互服务
- */
 class ContractService {
   constructor() {
     this.provider = null;
@@ -14,15 +11,10 @@ class ContractService {
     this.pairId = null;
   }
 
-  /**
-   * 初始化连接
-   */
   async init() {
     try {
-      // 连接到节点
       this.provider = new ethers.WebSocketProvider(CONFIG.RPC_URL);
 
-      // 创建合约实例
       this.orderbook = new ethers.Contract(
         CONFIG.CONTRACTS.ORDERBOOK,
         OrderBookABI,
@@ -35,7 +27,6 @@ class ContractService {
         this.provider
       );
 
-      // 计算交易对 ID
       this.pairId = ethers.id(CONFIG.DEFAULT_PAIR);
 
       console.log('✅ Contract service initialized');
@@ -48,9 +39,6 @@ class ContractService {
     }
   }
 
-  /**
-   * 获取交易对数据
-   */
   async getTradingPairData() {
     try {
       const data = await this.orderbook.getTradingPairData(this.pairId);
@@ -67,10 +55,6 @@ class ContractService {
     }
   }
 
-  /**
-   * 获取价格层级信息
-   * @param {string} levelId - 价格层级 ID
-   */
   async getPriceLevel(levelId) {
     try {
       const level = await this.orderbook.priceLevels(levelId);
@@ -89,11 +73,6 @@ class ContractService {
     }
   }
 
-  /**
-   * 获取订单簿深度
-   * @param {boolean} isAsk - true 为卖单，false 为买单
-   * @param {number} maxLevels - 最多返回多少层
-   */
   async getOrderBookDepth(isAsk, maxLevels = 10) {
     try {
       const pairData = await this.getTradingPairData();
@@ -126,22 +105,17 @@ class ContractService {
     }
   }
 
-  /**
-   * 获取 Sequencer 队列状态
-   */
   async getSequencerStatus() {
     try {
       const queueHead = await this.sequencer.queueHead();
       const queueTail = await this.sequencer.queueTail();
 
-      // 计算队列长度（简单遍历）
       let count = 0;
       let currentId = queueHead;
 
-      // 最多遍历 100 个请求以避免超时
       while (currentId !== 0n && count < 100) {
         const request = await this.sequencer.queuedRequests(currentId);
-        currentId = request[10]; // nextRequestId
+        currentId = request[10];
         count++;
       }
 
@@ -156,10 +130,6 @@ class ContractService {
     }
   }
 
-  /**
-   * 获取队列中的请求列表
-   * @param {number} maxRequests - 最多返回多少个请求
-   */
   async getQueuedRequests(maxRequests = 10) {
     try {
       const queueHead = await this.sequencer.queueHead();
@@ -188,7 +158,7 @@ class ContractService {
           timestamp: parseInt(request[9]),
         });
 
-        currentId = request[10]; // nextRequestId
+        currentId = request[10];
         count++;
       }
 
@@ -199,16 +169,11 @@ class ContractService {
     }
   }
 
-  /**
-   * 订阅合约事件
-   * @param {function} onEvent - 事件回调函数
-   */
   subscribeToEvents(onEvent) {
     if (!this.orderbook || !this.sequencer) {
       throw new Error('Contract service not initialized');
     }
 
-    // 订阅 OrderBook 事件
     this.orderbook.on('OrderPlaced', (orderId, trader, tradingPair, isAsk, price, amount) => {
       onEvent({
         type: 'OrderPlaced',
@@ -234,7 +199,6 @@ class ContractService {
       });
     });
 
-    // 订阅 Sequencer 事件
     this.sequencer.on('OrderRequested', (requestId, trader, tradingPair, isAsk, price, amount) => {
       onEvent({
         type: 'OrderRequested',
@@ -252,9 +216,6 @@ class ContractService {
     console.log('✅ Subscribed to contract events');
   }
 
-  /**
-   * 取消事件订阅
-   */
   unsubscribeFromEvents() {
     if (this.orderbook) {
       this.orderbook.removeAllListeners();
@@ -265,9 +226,6 @@ class ContractService {
     console.log('✅ Unsubscribed from contract events');
   }
 
-  /**
-   * 关闭连接
-   */
   async close() {
     this.unsubscribeFromEvents();
     if (this.provider) {
@@ -276,6 +234,5 @@ class ContractService {
   }
 }
 
-// 单例模式
 const contractService = new ContractService();
 export default contractService;

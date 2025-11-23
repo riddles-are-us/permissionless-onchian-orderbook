@@ -1,48 +1,26 @@
-# Node
-node_modules/
-npm-debug.log
-yarn-error.log
+# Dependencies
+node_modules
+package-lock.json
+yarn.lock
 
-# Expo
-.expo/
-.expo-shared/
-dist/
-web-build/
+# Build
+dist
+build
 
-# Native
-*.orig.*
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
-*.apk
-*.aab
-*.ipa
-
-# Metro
-.metro-health-check*
-
-# Debug
+# Logs
 *.log
-*.map
+npm-debug.log*
 
 # OS
 .DS_Store
 Thumbs.db
 
 # IDE
-.vscode/
-.idea/
+.vscode
+.idea
 *.swp
 *.swo
-*~
 
-# Misc
-*.pem
+# Env
 .env
 .env.local
-
-# Backup
-*.backup
-config.js.backup

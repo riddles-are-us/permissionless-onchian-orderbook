@@ -1,14 +1,11 @@
-// 配置文件 - 自动生成，请勿手动编辑
-// 最后更新: Sun 23 Nov 2025 20:55:43 CST
-
+// 配置文件
 export const CONFIG = {
   // RPC 节点地址
   RPC_URL: 'ws://127.0.0.1:8545', // Anvil 本地节点
-  // RPC_URL: 'wss://mainnet.infura.io/ws/v3/YOUR_KEY', // 主网示例
 
   CHAIN_ID: 31337, // Anvil 链 ID
 
-  // 合约地址 - 从 deployments.json 自动更新
+  // 合约地址 - 运行 npm run update-config 自动更新
   CONTRACTS: {
     ACCOUNT: '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0',
     ORDERBOOK: '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9',
