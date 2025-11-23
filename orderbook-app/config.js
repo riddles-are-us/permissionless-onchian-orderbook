@@ -1,0 +1,36 @@
+// 配置文件 - 自动生成，请勿手动编辑
+// 最后更新: Sun 23 Nov 2025 20:55:43 CST
+
+export const CONFIG = {
+  // RPC 节点地址
+  RPC_URL: 'ws://127.0.0.1:8545', // Anvil 本地节点
+  // RPC_URL: 'wss://mainnet.infura.io/ws/v3/YOUR_KEY', // 主网示例
+
+  CHAIN_ID: 31337, // Anvil 链 ID
+
+  // 合约地址 - 从 deployments.json 自动更新
+  CONTRACTS: {
+    ACCOUNT: '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0',
+    ORDERBOOK: '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9',
+    SEQUENCER: '0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9',
+  },
+
+  // 代币地址
+  TOKENS: {
+    WETH: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
+    USDC: '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512',
+  },
+
+  // 交易对
+  DEFAULT_PAIR: 'WETH/USDC',
+
+  // 精度
+  PRICE_DECIMALS: 8,
+  AMOUNT_DECIMALS: 8,
+
+  // 刷新间隔（毫秒）
+  REFRESH_INTERVAL: 3000,
+
+  // 订单簿深度显示层级数
+  DEPTH_LEVELS: 10,
+};
