@@ -1,0 +1,13 @@
+{
+  "name": "orderbook-test",
+  "version": "1.0.0",
+  "description": "OrderBook system with Hardhat",
+  "scripts": {
+    "test": "hardhat test",
+    "deploy": "hardhat run scripts/deploy.js --network localhost"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "hardhat": "^2.19.0"
+  }
+}
