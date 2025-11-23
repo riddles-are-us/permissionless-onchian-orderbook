@@ -388,6 +388,100 @@ cast tx <TX_HASH> --rpc-url http://127.0.0.1:8545
 - 批量处理 gas 消耗
 - Gas 节省百分比
 
+## 订单取消测试
+
+### 测试订单取消功能
+
+订单取消也通过 Sequencer 队列实现，确保 FIFO 原则。
+
+#### 1. 下订单并记录 Order ID
+
+```bash
+# 使用 cast 下一个订单
+SEQUENCER=$(jq -r '.sequencer' deployments.json)
+PAIR_ID=$(cast keccak "WETH/USDC")
+USER_KEY="0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+
+# 下买单
+RESULT=$(cast send $SEQUENCER \
+  "placeLimitOrder(bytes32,bool,uint256,uint256)" \
+  $PAIR_ID \
+  false \
+  200000000000 \
+  100000000 \
+  --rpc-url http://127.0.0.1:8545 \
+  --private-key $USER_KEY \
+  --json)
+
+# 从交易 receipt 中获取 orderId（需要解析事件）
+```
+
+#### 2. 请求取消订单
+
+```bash
+# 假设 orderId = 1
+ORDER_ID=1
+
+cast send $SEQUENCER \
+  "requestRemoveOrder(uint256)" \
+  $ORDER_ID \
+  --rpc-url http://127.0.0.1:8545 \
+  --private-key $USER_KEY
+```
+
+#### 3. 验证取消请求进入队列
+
+```bash
+# 检查队列长度
+QUEUE_LEN=$(cast call $SEQUENCER "getQueueLength(uint256)" 100 --rpc-url http://127.0.0.1:8545)
+echo "Queue length: $QUEUE_LEN"
+
+# 查看队列中的请求
+cast call $SEQUENCER "getQueuedRequest(uint256)" <REQUEST_ID> --rpc-url http://127.0.0.1:8545
+```
+
+#### 4. Matcher 处理取消请求
+
+Matcher 会自动处理队列中的 RemoveOrder 请求：
+
+**预期行为**:
+- Matcher 读取到 RemoveOrder 类型的请求
+- 调用 `OrderBook.removeOrder(orderId)`
+- 订单从订单簿中移除
+- 锁定的资金解锁返还给用户
+
+**验证**:
+```bash
+# 检查订单是否已从订单簿移除
+ORDERBOOK=$(jq -r '.orderbook' deployments.json)
+cast call $ORDERBOOK "orders(uint256)" $ORDER_ID --rpc-url http://127.0.0.1:8545
+
+# 检查用户余额是否恢复
+ACCOUNT=$(jq -r '.account' deployments.json)
+WETH=$(jq -r '.weth' deployments.json)
+USER="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+
+cast call $ACCOUNT "getBalance(address,address)" $USER $WETH --rpc-url http://127.0.0.1:8545
+```
+
+### 测试场景
+
+**场景 1: 取消未成交的订单**
+- 下一个买单
+- 立即请求取消
+- Matcher 处理后订单消失，资金解锁
+
+**场景 2: 取消部分成交的订单**
+- 下一个大额买单
+- 等待部分成交
+- 请求取消
+- 剩余部分被取消，已成交部分保留
+
+**场景 3: 并发取消和匹配**
+- 同时有新订单和取消请求在队列
+- Matcher 按 FIFO 顺序处理
+- 验证处理顺序正确
+
 ## 下一步
 
 - [ ] 添加卖单测试

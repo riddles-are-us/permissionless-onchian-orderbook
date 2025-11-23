@@ -44,6 +44,26 @@ function placeMarketOrder(
 ) external returns (uint256 orderId)
 ```
 
+#### `requestRemoveOrder()` - 请求移除订单
+```solidity
+function requestRemoveOrder(
+    uint256 orderIdToRemove  // 要移除的订单ID
+) external returns (uint256 requestId)
+```
+
+**功能**:
+- 提交撤单请求到队列
+- 验证订单存在于 OrderBook 中
+- 遵循 FIFO 原则，确保撤单的公平性
+- 返回请求 ID 用于追踪处理状态
+
+**流程**:
+1. 用户调用 `requestRemoveOrder(orderId)`
+2. Sequencer 验证订单存在
+3. 创建 RemoveOrder 类型的请求
+4. 请求进入队列等待处理
+5. Matcher 处理时会调用 OrderBook.removeOrder()
+
 #### `popOrder()` - 弹出订单（仅OrderBook可调用）
 ```solidity
 function popOrder(uint256 orderId) external onlyOrderBook

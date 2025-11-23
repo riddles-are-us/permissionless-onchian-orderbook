@@ -111,6 +111,7 @@ cargo run -- --log-level debug
 测试成功后，可以：
 - 修改 `PrepareTest.s.sol` 下更多订单
 - 测试卖单场景
+- **测试订单取消** - 使用 `Sequencer.requestRemoveOrder(orderId)`
 - 测试订单撮合
 - 调整 Matcher 配置（batch size, interval）
 - 测试多交易对
