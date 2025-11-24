@@ -122,7 +122,7 @@ contract OrderBook {
             uint8 orderType,
             bool isAsk,
             uint256 price,
-            uint256 amount,
+            uint256 amount
         ) = sequencer.getQueuedOrder(sequencerOrderId);
 
         // 验证是限价单
@@ -174,14 +174,15 @@ contract OrderBook {
             address trader,
             ,  // orderType
             ,  // isAsk
-            ,  // price
-            ,  // amount
-            uint256 orderIdToRemove,
+            uint256 priceOrOrderId,  // 对于 RemoveOrder，这里是 orderIdToRemove
+            uint256 _unusedAmount
         ) = sequencer.getQueuedRequest(requestId);
 
         // 验证是撤单请求
         require(uint8(requestType) == 1, "Not a remove order request");
 
+        // 对于撤单请求，price 字段存储的是 orderIdToRemove
+        uint256 orderIdToRemove = priceOrOrderId;
         Order storage order = orders[orderIdToRemove];
         require(order.id != 0, "Order does not exist");
         require(order.trader == trader, "Not order owner");
@@ -285,8 +286,7 @@ contract OrderBook {
                 ,  // orderType
                 ,  // isAsk
                 ,  // price
-                ,  // amount
-                ,  // orderIdToRemove
+                // amount
             ) = sequencer.getQueuedRequest(requestId);
 
             // 根据请求类型处理
@@ -322,8 +322,7 @@ contract OrderBook {
             ISequencer.OrderType orderType,
             bool isAsk,
             uint256 price,
-            uint256 amount,
-            ,  // orderIdToRemove
+            uint256 amount
         ) = sequencer.getQueuedRequest(requestId);
 
         if (uint8(orderType) == 0) {
@@ -377,11 +376,12 @@ contract OrderBook {
             address trader,
             ,  // orderType
             ,  // isAsk
-            ,  // price
-            ,  // amount
-            uint256 orderIdToRemove,
+            uint256 priceOrOrderId,  // 对于 RemoveOrder，这里是 orderIdToRemove
+            uint256 _unusedAmount
         ) = sequencer.getQueuedRequest(requestId);
 
+        // 对于撤单请求，price 字段存储的是 orderIdToRemove
+        uint256 orderIdToRemove = priceOrOrderId;
         Order storage order = orders[orderIdToRemove];
         require(order.id != 0, "Order does not exist");
         require(order.trader == trader, "Not order owner");
@@ -746,8 +746,8 @@ contract OrderBook {
             address trader,
             uint8 orderType,
             bool isAsk,
-            ,
-            uint256 amount,
+            ,  // price
+            uint256 amount
         ) = sequencer.getQueuedOrder(sequencerOrderId);
 
         // 验证是市价单

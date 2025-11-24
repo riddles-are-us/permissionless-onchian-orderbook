@@ -4,6 +4,14 @@ pragma solidity ^0.8.0;
 import "./IAccount.sol";
 
 /**
+ * @title IOrderBook
+ * @notice Minimal interface for OrderBook to access orderTradingPairs
+ */
+interface IOrderBook {
+    function orderTradingPairs(uint256 orderId) external view returns (bytes32);
+}
+
+/**
  * @title Sequencer
  * @notice 链上订单排序器，确保订单插入的公平性和顺序性
  * @dev 所有订单必须先在Sequencer中排队，然后才能被插入到OrderBook中
@@ -23,20 +31,27 @@ contract Sequencer {
     }
 
     // 排队中的请求信息
+    // 优化后使用 packed storage，从12个字段减少到8个字段
     struct QueuedRequest {
-        uint256 requestId;
-        RequestType requestType;  // 请求类型：下单或撤单
-        bytes32 tradingPair;
-        address trader;
-        OrderType orderType;
-        bool isAsk;
-        uint256 price;      // 限价单使用，市价单为0
-        uint256 amount;
-        uint256 orderIdToRemove;  // 如果是撤单请求，这里存储要删除的订单ID
-        uint256 timestamp;
-        uint256 nextRequestId;  // 队列中的下一个请求
-        uint256 prevRequestId;  // 队列中的上一个请求
+        bytes32 tradingPair;      // Slot 0: 32 bytes
+
+        // Slot 1: Packed storage (23 bytes used, 9 bytes free)
+        address trader;           // 20 bytes
+        uint8 requestType;        // 1 byte (0=PlaceOrder, 1=RemoveOrder)
+        uint8 orderType;          // 1 byte (0=LimitOrder, 1=MarketOrder)
+        bool isAsk;              // 1 byte
+
+        // Slot 2-5
+        uint256 price;           // 32 bytes - 限价单使用；撤单请求时存储orderIdToRemove
+        uint256 amount;          // 32 bytes
+        uint256 nextRequestId;   // 32 bytes - 队列中的下一个请求
+        uint256 prevRequestId;   // 32 bytes - 队列中的上一个请求
     }
+
+    // 注意：
+    // 1. requestId 被移除，使用 mapping key 代替
+    // 2. timestamp 被移除，使用事件中的 block.timestamp
+    // 3. orderIdToRemove 被移除，撤单请求复用 price 字段
 
     // 存储
     mapping(uint256 => QueuedRequest) public queuedRequests;
@@ -212,13 +227,17 @@ contract Sequencer {
         // 验证订单存在且在OrderBook中
         require(ordersInBook[orderIdToRemove], "Order not in book");
 
+        // 从OrderBook获取订单的tradingPair
+        bytes32 tradingPair = IOrderBook(orderBook).orderTradingPairs(orderIdToRemove);
+        require(tradingPair != bytes32(0), "Order trading pair not found");
+
         // 验证订单所有权（通过OrderBook查询）
-        // 这里简化处理，实际应该查询OrderBook验证
+        // OrderBook会在处理时验证订单所有权
 
         // 创建撤单请求
         requestId = _createRequest(
             RequestType.RemoveOrder,
-            bytes32(0),  // tradingPair从OrderBook获取
+            tradingPair,
             msg.sender,
             OrderType.LimitOrder,  // 这里不重要
             false,       // 这里不重要
@@ -227,7 +246,7 @@ contract Sequencer {
             orderIdToRemove
         );
 
-        emit RemoveOrderRequested(requestId, orderIdToRemove, bytes32(0), msg.sender, block.timestamp);
+        emit RemoveOrderRequested(requestId, orderIdToRemove, tradingPair, msg.sender, block.timestamp);
 
         return requestId;
     }
@@ -248,16 +267,22 @@ contract Sequencer {
         requestId = nextRequestId++;
 
         QueuedRequest storage request = queuedRequests[requestId];
-        request.requestId = requestId;
-        request.requestType = requestType;
+        // 优化：不再存储 requestId (使用 mapping key)
+        // 优化：不再存储 timestamp (使用事件)
         request.tradingPair = tradingPair;
         request.trader = trader;
-        request.orderType = orderType;
+        request.requestType = uint8(requestType);  // 转换为 uint8 以支持 packed storage
+        request.orderType = uint8(orderType);      // 转换为 uint8 以支持 packed storage
         request.isAsk = isAsk;
-        request.price = price;
-        request.amount = amount;
-        request.orderIdToRemove = orderIdToRemove;
-        request.timestamp = block.timestamp;
+
+        // 优化：撤单请求复用 price 字段存储 orderIdToRemove
+        if (requestType == RequestType.RemoveOrder) {
+            request.price = orderIdToRemove;  // 存储要删除的订单ID
+            request.amount = 0;
+        } else {
+            request.price = price;
+            request.amount = amount;
+        }
 
         // 添加到队列尾部
         if (queueTail != EMPTY) {
@@ -284,7 +309,8 @@ contract Sequencer {
         QueuedRequest storage request = queuedRequests[requestId];
 
         // 如果是下单请求，标记订单已在OrderBook中
-        if (request.requestType == RequestType.PlaceOrder) {
+        // 优化：requestType 现在是 uint8，需要转换比较
+        if (request.requestType == uint8(RequestType.PlaceOrder)) {
             ordersInBook[requestId] = true;
             emit OrderInsertedToBook(requestId);
         }
@@ -301,7 +327,8 @@ contract Sequencer {
             queueTail = EMPTY;
         }
 
-        emit RequestProcessed(requestId, request.requestType);
+        // 优化：requestType 是 uint8，需要转换为 RequestType
+        emit RequestProcessed(requestId, RequestType(request.requestType));
 
         // 删除请求数据
         delete queuedRequests[requestId];
@@ -341,10 +368,8 @@ contract Sequencer {
      * @return trader 交易者
      * @return orderType 订单类型
      * @return isAsk 是否为卖单
-     * @return price 价格
+     * @return price 价格（撤单请求时为 orderIdToRemove）
      * @return amount 数量
-     * @return orderIdToRemove 要删除的订单ID（撤单请求时使用）
-     * @return timestamp 时间戳
      */
     function getQueuedRequest(uint256 requestId)
         external
@@ -356,24 +381,21 @@ contract Sequencer {
             OrderType orderType,
             bool isAsk,
             uint256 price,
-            uint256 amount,
-            uint256 orderIdToRemove,
-            uint256 timestamp
+            uint256 amount
         )
     {
         QueuedRequest storage request = queuedRequests[requestId];
-        require(request.requestId != 0, "Request does not exist");
+        // 优化：检查 tradingPair 或 trader 来验证请求存在（而不是 requestId）
+        require(request.trader != address(0), "Request does not exist");
 
         return (
-            request.requestType,
+            RequestType(request.requestType),
             request.tradingPair,
             request.trader,
-            request.orderType,
+            OrderType(request.orderType),
             request.isAsk,
-            request.price,
-            request.amount,
-            request.orderIdToRemove,
-            request.timestamp
+            request.price,  // 注意：对于 RemoveOrder，这里存储的是 orderIdToRemove
+            request.amount
         );
     }
 
@@ -390,22 +412,21 @@ contract Sequencer {
             uint8 orderType,
             bool isAsk,
             uint256 price,
-            uint256 amount,
-            uint256 timestamp
+            uint256 amount
         )
     {
         QueuedRequest storage request = queuedRequests[orderId];
-        require(request.requestId != 0, "Order does not exist");
-        require(request.requestType == RequestType.PlaceOrder, "Not a place order request");
+        // 优化：检查 trader 来验证订单存在（而不是 requestId）
+        require(request.trader != address(0), "Order does not exist");
+        require(request.requestType == uint8(RequestType.PlaceOrder), "Not a place order request");
 
         return (
             request.tradingPair,
             request.trader,
-            uint8(request.orderType),
+            request.orderType,  // 已经是 uint8
             request.isAsk,
             request.price,
-            request.amount,
-            request.timestamp
+            request.amount
         );
     }
 
@@ -434,7 +455,8 @@ contract Sequencer {
 
         while (currentOrderId != EMPTY && count < maxCount) {
             QueuedRequest storage request = queuedRequests[currentOrderId];
-            orderIds[count] = request.requestId;
+            // 优化：使用 mapping key 作为 requestId
+            orderIds[count] = currentOrderId;
             traders[count] = request.trader;
             amounts[count] = request.amount;
             currentOrderId = request.nextRequestId;

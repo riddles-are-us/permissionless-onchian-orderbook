@@ -23,10 +23,8 @@ interface ISequencer {
         address trader,
         OrderType orderType,
         bool isAsk,
-        uint256 price,
-        uint256 amount,
-        uint256 orderIdToRemove,
-        uint256 timestamp
+        uint256 price,  // 注意：对于 RemoveOrder，这里存储 orderIdToRemove
+        uint256 amount
     );
 
     function getQueuedOrder(uint256 orderId) external view returns (
@@ -35,7 +33,6 @@ interface ISequencer {
         uint8 orderType,
         bool isAsk,
         uint256 price,
-        uint256 amount,
-        uint256 timestamp
+        uint256 amount
     );
 }

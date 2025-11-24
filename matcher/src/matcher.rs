@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use ethers::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct MatchingEngine {
     config: Config,
@@ -157,17 +157,13 @@ impl MatchingEngine {
             return Ok(level_id);
         }
 
-        // 获取订单簿数据
-        let orderbook_data = self.state.get_orderbook_data(trading_pair);
+        // 从合约获取最新的订单簿数据（不使用缓存）
+        let orderbook_data = self.orderbook.order_books(*trading_pair).call().await?;
 
-        let head = if let Some(data) = orderbook_data {
-            if is_ask {
-                data.ask_head
-            } else {
-                data.bid_head
-            }
+        let head = if is_ask {
+            orderbook_data.0  // askHead
         } else {
-            U256::zero()
+            orderbook_data.2  // bidHead
         };
 
         // 如果订单簿为空，返回 0（插入到头部）
@@ -247,6 +243,14 @@ impl MatchingEngine {
         let receipt = pending_tx
             .await?
             .context("Transaction failed")?;
+
+        // 检查交易是否成功
+        if receipt.status != Some(1.into()) {
+            error!("❌ Transaction failed with status: {:?}", receipt.status);
+            error!("   Gas used: {}", receipt.gas_used.unwrap_or_default());
+            error!("   {} events emitted (expected > 0)", receipt.logs.len());
+            return Err(anyhow::anyhow!("Transaction reverted"));
+        }
 
         info!("✅ Transaction confirmed in block: {:?}", receipt.block_number);
 

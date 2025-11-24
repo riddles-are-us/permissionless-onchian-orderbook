@@ -103,31 +103,45 @@ impl StateSynchronizer {
             // 调用合约获取请求信息（使用 queuedRequests mapping 获取完整数据）
             let request_data = self.sequencer.queued_requests(current_id).call().await?;
 
-            // request_data 是一个 tuple，包含所有字段
-            // (requestId, requestType, tradingPair, trader, orderType, isAsk, price, amount, orderIdToRemove, timestamp, nextRequestId, prevRequestId)
-            let next_id = request_data.10; // nextRequestId 是第 11 个字段 (index 10)
+            // 优化后的 request_data tuple 字段（按新结构体顺序）：
+            // 0: tradingPair (bytes32)
+            // 1: trader (address)
+            // 2: requestType (uint8)
+            // 3: orderType (uint8)
+            // 4: isAsk (bool)
+            // 5: price (uint256)
+            // 6: amount (uint256)
+            // 7: nextRequestId (uint256)
+            // 8: prevRequestId (uint256)
+            let next_id = request_data.7; // nextRequestId 是第 8 个字段 (index 7)
+
+            // requestType 从 uint8 转换
+            let request_type_u8: u8 = request_data.2.try_into().unwrap_or(0);
+            // orderType 从 uint8 转换
+            let order_type_u8: u8 = request_data.3.try_into().unwrap_or(0);
 
             let request = QueuedRequest {
-                request_id: request_data.0,
-                request_type: match request_data.1 {
+                request_id: current_id,  // 使用 mapping key 作为 requestId
+                request_type: match request_type_u8 {
                     0 => RequestType::PlaceOrder,
                     1 => RequestType::RemoveOrder,
                     _ => {
-                        warn!("Unknown request type: {}", request_data.1);
+                        warn!("Unknown request type: {}", request_type_u8);
                         break;
                     }
                 },
-                trading_pair: request_data.2,
-                trader: request_data.3,
-                order_type: match request_data.4 {
+                trading_pair: request_data.0,  // tradingPair
+                trader: request_data.1,         // trader
+                order_type: match order_type_u8 {
                     0 => OrderType::Limit,
                     1 => OrderType::Market,
                     _ => OrderType::Limit,
                 },
-                is_ask: request_data.5,
-                price: request_data.6,
-                amount: request_data.7,
-                order_id_to_remove: request_data.8,
+                is_ask: request_data.4,
+                price: request_data.5,
+                amount: request_data.6,
+                // orderIdToRemove: 对于 RemoveOrder，存储在 price 字段中
+                order_id_to_remove: if request_type_u8 == 1 { request_data.5 } else { ethers::types::U256::zero() },
                 next_request_id: next_id,
             };
 
@@ -151,37 +165,43 @@ impl StateSynchronizer {
 
     /// 监听事件
     async fn watch_events(&self) -> Result<()> {
-        info!("👀 Watching for contract events");
+        info!("👀 Watching for new orders (polling mode)");
 
-        // TODO: 实现事件监听
-        // 当 abigen 成功生成合约绑定后，可以使用以下代码：
-        //
-        // let seq_event_filter = self.sequencer.events();
-        // let mut seq_stream = seq_event_filter.stream().await?;
-        //
-        // let ob_event_filter = self.orderbook.events();
-        // let mut ob_stream = ob_event_filter.stream().await?;
-        //
-        // loop {
-        //     tokio::select! {
-        //         Some(Ok(event)) = seq_stream.next() => {
-        //             self.handle_sequencer_event(event).await?;
-        //         }
-        //         Some(Ok(event)) = ob_stream.next() => {
-        //             self.handle_orderbook_event(event).await?;
-        //         }
-        //         else => {
-        //             warn!("Event stream ended");
-        //             break;
-        //         }
-        //     }
-        // }
+        // 使用轮询模式持续监控队列状态
+        // 每5秒检查一次是否有新订单
+        let poll_interval = tokio::time::Duration::from_secs(5);
+        let mut interval = tokio::time::interval(poll_interval);
 
-        // 临时实现：简单等待
-        warn!("Event watching not yet implemented");
-        tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+        loop {
+            interval.tick().await;
 
-        Ok(())
+            // 获取当前区块号
+            let current_block = match self.provider.get_block_number().await {
+                Ok(block) => block.as_u64(),
+                Err(e) => {
+                    warn!("Failed to get current block: {}", e);
+                    continue;
+                }
+            };
+
+            // 重新同步 Sequencer 状态以获取新订单
+            if let Err(e) = self.sync_sequencer_state(current_block).await {
+                warn!("Error syncing sequencer state: {}", e);
+                continue;
+            }
+
+            // 更新当前区块
+            self.state.update_current_block(current_block);
+
+            // 检查队列长度
+            let queue_head = *self.state.queue_head.read();
+            if !queue_head.is_zero() {
+                let queue_size = self.state.queued_requests.len();
+                if queue_size > 0 {
+                    debug!("📋 Queue status: {} pending requests", queue_size);
+                }
+            }
+        }
     }
 
     /// 处理 Sequencer 事件

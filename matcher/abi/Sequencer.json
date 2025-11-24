@@ -113,11 +113,6 @@
         "name": "amount",
         "type": "uint256",
         "internalType": "uint256"
-      },
-      {
-        "name": "timestamp",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -165,16 +160,6 @@
       },
       {
         "name": "amount",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "orderIdToRemove",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "timestamp",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -388,16 +373,6 @@
     ],
     "outputs": [
       {
-        "name": "requestId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "requestType",
-        "type": "uint8",
-        "internalType": "enum Sequencer.RequestType"
-      },
-      {
         "name": "tradingPair",
         "type": "bytes32",
         "internalType": "bytes32"
@@ -408,9 +383,14 @@
         "internalType": "address"
       },
       {
+        "name": "requestType",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
         "name": "orderType",
         "type": "uint8",
-        "internalType": "enum Sequencer.OrderType"
+        "internalType": "uint8"
       },
       {
         "name": "isAsk",
@@ -424,16 +404,6 @@
       },
       {
         "name": "amount",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "orderIdToRemove",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "timestamp",
         "type": "uint256",
         "internalType": "uint256"
       },

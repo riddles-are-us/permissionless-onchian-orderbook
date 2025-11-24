@@ -34,6 +34,7 @@ contract GasTest is Test {
         account.setOrderBook(address(orderbook));
         account.setSequencer(address(sequencer));
         orderbook.setSequencer(address(sequencer));
+        orderbook.setAccount(address(account));  // 添加此行
         sequencer.setAccount(address(account));
         sequencer.setOrderBook(address(orderbook));
 
@@ -127,13 +128,16 @@ contract GasTest is Test {
         }
         vm.stopPrank();
 
-        // 批量处理买单
+        // 批量处理买单 - 修正插入位置
+        // 对于 bid 订单，价格从高到低 (2000, 1990, 1980, 1970, 1960)
+        // 第一个订单插入头部创建 priceLevel 1，后续订单应该插入到前一个 priceLevel 之后
         uint256[] memory buyRequestIds = new uint256[](5);
         uint256[] memory insertAfterPriceLevels = new uint256[](5);
         uint256[] memory insertAfterOrders = new uint256[](5);
         for (uint256 i = 0; i < 5; i++) {
             buyRequestIds[i] = i + 1;
-            insertAfterPriceLevels[i] = 0;
+            // 第一个插入头部，后续插入到前一个 priceLevel 之后
+            insertAfterPriceLevels[i] = (i == 0) ? 0 : (i);  // priceLevel IDs: 1, 2, 3, 4, 5
             insertAfterOrders[i] = 0;
         }
         vm.prank(matcher);
@@ -147,11 +151,14 @@ contract GasTest is Test {
         }
         vm.stopPrank();
 
-        // 批量处理卖单
+        // 批量处理卖单 - 修正插入位置
+        // 对于 ask 订单，价格从低到高 (1990, 2000, 2010, 2020, 2030)
+        // 第一个订单插入头部创建 priceLevel 6，后续订单应该插入到前一个 priceLevel 之后
         uint256[] memory sellRequestIds = new uint256[](5);
         for (uint256 i = 0; i < 5; i++) {
             sellRequestIds[i] = 6 + i;
-            insertAfterPriceLevels[i] = 0;
+            // 第一个插入头部，后续插入到前一个 priceLevel 之后
+            insertAfterPriceLevels[i] = (i == 0) ? 0 : (5 + i);  // priceLevel IDs: 6, 7, 8, 9, 10
             insertAfterOrders[i] = 0;
         }
 
@@ -186,13 +193,16 @@ contract GasTest is Test {
             }
             vm.stopPrank();
 
-            // 批量处理买单
+            // 批量处理买单 - 修正插入位置
+            // Bid 订单价格递减，每个新订单插入到前一个 priceLevel 之后
             uint256[] memory buyRequestIds = new uint256[](depth);
             uint256[] memory insertAfterPriceLevels = new uint256[](depth);
             uint256[] memory insertAfterOrders = new uint256[](depth);
             for (uint256 i = 0; i < depth; i++) {
                 buyRequestIds[i] = i + 1;
-                insertAfterPriceLevels[i] = 0;
+                // 第一个插入头部，后续插入到前一个 priceLevel 之后
+                // 每次 _clearOrderBook() 后 priceLevel IDs 从 1 开始
+                insertAfterPriceLevels[i] = (i == 0) ? 0 : i;
                 insertAfterOrders[i] = 0;
             }
             vm.prank(matcher);
@@ -245,7 +255,8 @@ contract GasTest is Test {
             uint256[] memory insertAfter = new uint256[](1);
             uint256[] memory insertAfterOrders = new uint256[](1);
             requestIds[0] = i + 1;
-            insertAfter[0] = 0;
+            // 修正：第一个插入头部，后续插入到前一个 priceLevel 之后
+            insertAfter[0] = (i == 0) ? 0 : i;
             insertAfterOrders[0] = 0;
 
             vm.prank(matcher);
@@ -279,7 +290,9 @@ contract GasTest is Test {
         uint256[] memory insertAfterOrders = new uint256[](orderCount);
         for (uint256 i = 0; i < orderCount; i++) {
             requestIds[i] = i + 1;
-            insertAfter[i] = 0;
+            // 修正：第一个插入头部，后续插入到前一个 priceLevel 之后
+            // 清理后 orderbook 重新部署，priceLevel IDs 从 1 开始
+            insertAfter[i] = (i == 0) ? 0 : i;  // priceLevel IDs: 1, 2, 3...
             insertAfterOrders[i] = 0;
         }
 
@@ -338,15 +351,35 @@ contract GasTest is Test {
 
     /// @notice 辅助函数：清空订单簿
     function _clearOrderBook() internal {
-        // 简单的清理方式：重新部署合约
+        // 重新部署所有核心合约
+        account = new AccountContract();
         orderbook = new OrderBook();
-        orderbook.setSequencer(address(sequencer));
-        account.setOrderBook(address(orderbook));
-
-        // 重新设置 Sequencer 队列头
         sequencer = new Sequencer();
+
+        // 配置合约关系
+        account.setOrderBook(address(orderbook));
+        account.setSequencer(address(sequencer));
+        orderbook.setSequencer(address(sequencer));
+        orderbook.setAccount(address(account));  // 添加此行
         sequencer.setAccount(address(account));
         sequencer.setOrderBook(address(orderbook));
-        account.setSequencer(address(sequencer));
+
+        // 重新注册交易对
+        account.registerTradingPair(pairId, address(weth), address(usdc));
+
+        // 重新充值测试账户
+        vm.startPrank(trader1);
+        weth.approve(address(account), type(uint256).max);
+        usdc.approve(address(account), type(uint256).max);
+        account.deposit(address(weth), 100 * 10**18);
+        account.deposit(address(usdc), 100000 * 10**6);
+        vm.stopPrank();
+
+        vm.startPrank(trader2);
+        weth.approve(address(account), type(uint256).max);
+        usdc.approve(address(account), type(uint256).max);
+        account.deposit(address(weth), 100 * 10**18);
+        account.deposit(address(usdc), 100000 * 10**6);
+        vm.stopPrank();
     }
 }

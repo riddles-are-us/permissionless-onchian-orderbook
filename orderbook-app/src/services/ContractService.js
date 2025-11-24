@@ -119,7 +119,7 @@ class ContractService {
 
       while (currentId !== 0n && count < 100) {
         const request = await this.sequencer.queuedRequests(currentId);
-        currentId = request[10];
+        currentId = request[7]; // nextRequestId is at index 7 after optimization
         count++;
       }
 
@@ -149,20 +149,25 @@ class ContractService {
       while (currentId !== 0n && count < maxRequests) {
         const request = await this.sequencer.queuedRequests(currentId);
 
+        // 优化后的结构体字段顺序：
+        // 0: tradingPair, 1: trader, 2: requestType (uint8), 3: orderType (uint8),
+        // 4: isAsk, 5: price, 6: amount, 7: nextRequestId, 8: prevRequestId
+        const requestType = parseInt(request[2]);
         requests.push({
-          requestId: request[0].toString(),
-          requestType: parseInt(request[1]),
-          tradingPair: request[2],
-          trader: request[3],
-          orderType: parseInt(request[4]),
-          isAsk: request[5],
-          price: request[6].toString(),
-          amount: request[7].toString(),
-          orderIdToRemove: request[8].toString(),
-          timestamp: parseInt(request[9]),
+          requestId: currentId.toString(),  // 使用 mapping key 作为 requestId
+          requestType: requestType,
+          tradingPair: request[0],
+          trader: request[1],
+          orderType: parseInt(request[3]),
+          isAsk: request[4],
+          price: request[5].toString(),
+          amount: request[6].toString(),
+          // orderIdToRemove: 对于 RemoveOrder (requestType=1)，存储在 price 字段中
+          orderIdToRemove: requestType === 1 ? request[5].toString() : '0',
+          // timestamp: 已移除，可从事件获取
         });
 
-        currentId = request[10];
+        currentId = request[7];  // nextRequestId
         count++;
       }
 

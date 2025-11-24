@@ -1,0 +1,258 @@
+.place-order {
+  padding: 20px;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.no-wallet {
+  text-align: center;
+  padding: 60px 20px;
+  color: #666;
+  font-size: 16px;
+}
+
+/* 余额部分 */
+.balances-section {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.balances-section h3 {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+  color: #333;
+}
+
+.balance-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.balance-item {
+  background: white;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.balance-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.token-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: #333;
+}
+
+.deposit-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  background: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.deposit-btn:hover:not(:disabled) {
+  background: #0056b3;
+}
+
+.deposit-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.balance-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.balance-row:last-child {
+  margin-bottom: 0;
+}
+
+.balance-row .label {
+  color: #666;
+}
+
+.balance-row .value {
+  font-weight: 600;
+  color: #333;
+  font-family: 'Monaco', 'Menlo', monospace;
+}
+
+/* 订单表单 */
+.order-form {
+  background: white;
+  border-radius: 8px;
+  padding: 24px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.order-form h3 {
+  margin: 0 0 20px 0;
+  font-size: 18px;
+  color: #333;
+}
+
+.order-type-selector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.type-btn {
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 2px solid #e0e0e0;
+  background: white;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.type-btn:hover:not(.active) {
+  border-color: #ccc;
+  background: #f8f9fa;
+}
+
+.type-btn.active {
+  color: white;
+}
+
+.type-btn.active.buy {
+  background: #10b981;
+  border-color: #10b981;
+}
+
+.type-btn.active.sell {
+  background: #ef4444;
+  border-color: #ef4444;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #555;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 12px;
+  font-size: 14px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  box-sizing: border-box;
+  font-family: 'Monaco', 'Menlo', monospace;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+}
+
+.form-group input:disabled {
+  background: #f5f5f5;
+  cursor: not-allowed;
+}
+
+.order-summary {
+  background: #f8f9fa;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 20px;
+}
+
+.summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 14px;
+  color: #666;
+}
+
+.summary-row .value {
+  font-weight: 600;
+  color: #333;
+  font-family: 'Monaco', 'Menlo', monospace;
+}
+
+.submit-btn {
+  width: 100%;
+  padding: 14px;
+  font-size: 16px;
+  font-weight: 600;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.submit-btn.buy {
+  background: #10b981;
+}
+
+.submit-btn.buy:hover:not(:disabled) {
+  background: #059669;
+}
+
+.submit-btn.sell {
+  background: #ef4444;
+}
+
+.submit-btn.sell:hover:not(:disabled) {
+  background: #dc2626;
+}
+
+.submit-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.error-message {
+  margin-top: 16px;
+  padding: 12px;
+  background: #fee2e2;
+  border: 1px solid #fca5a5;
+  border-radius: 6px;
+  color: #dc2626;
+  font-size: 14px;
+}
+
+.success-message {
+  margin-top: 16px;
+  padding: 12px;
+  background: #d1fae5;
+  border: 1px solid #6ee7b7;
+  border-radius: 6px;
+  color: #059669;
+  font-size: 14px;
+}
+
+/* 响应式 */
+@media (max-width: 640px) {
+  .balance-grid {
+    grid-template-columns: 1fr;
+  }
+}
