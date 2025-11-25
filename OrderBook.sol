@@ -157,6 +157,9 @@ contract OrderBook {
         sequencer.processRequest(sequencerOrderId);
 
         emit OrderInserted(tradingPair, sequencerOrderId, isAsk, price, amount);
+
+        // 自动尝试匹配（如果订单插在最优价格）
+        _tryMatchAfterInsertion(tradingPair, sequencerOrderId, isAsk);
     }
 
     /**
@@ -347,6 +350,9 @@ contract OrderBook {
 
             sequencer.processRequest(requestId);
             emit OrderInserted(tradingPair, requestId, isAsk, price, amount);
+
+            // 自动尝试匹配
+            _tryMatchAfterInsertion(tradingPair, requestId, isAsk);
         } else {
             // 市价单 - 总是插入到队尾
             Order storage order = orders[requestId];
@@ -362,6 +368,9 @@ contract OrderBook {
 
             sequencer.processRequest(requestId);
             emit MarketOrderInserted(tradingPair, requestId, isAsk, amount);
+
+            // 自动尝试匹配
+            _tryMatchAfterInsertion(tradingPair, requestId, isAsk);
         }
     }
 
@@ -771,6 +780,9 @@ contract OrderBook {
         sequencer.processRequest(sequencerOrderId);
 
         emit MarketOrderInserted(tradingPair, sequencerOrderId, isAsk, amount);
+
+        // 自动尝试匹配（市价单总是会立即匹配）
+        _tryMatchAfterInsertion(tradingPair, sequencerOrderId, isAsk);
     }
 
     /**
@@ -872,13 +884,45 @@ contract OrderBook {
     // ============ 撮合引擎 ============
 
     /**
-     * @notice 撮合订单
+     * @dev 插入订单后自动尝试匹配
+     * @param tradingPair 交易对
+     * @param newOrderId 新插入的订单ID
+     * @param isAsk 是否是卖单
+     */
+    function _tryMatchAfterInsertion(
+        bytes32 tradingPair,
+        uint256 newOrderId,
+        bool isAsk
+    ) internal {
+        // 尝试匹配最多 10 次（防止 gas 耗尽）
+        // 这个数字可以根据实际情况调整
+        uint256 maxIterations = 10;
+
+        // 匹配限价单
+        _matchOrdersInternal(tradingPair, maxIterations);
+
+        // 匹配市价单
+        _matchMarketOrdersInternal(tradingPair, maxIterations);
+    }
+
+    /**
+     * @notice 撮合订单（外部调用接口，保留用于手动触发）
      * @dev 撮合bid和ask订单，确保撮合后bid最高价 < ask最低价
      * @param tradingPair 交易对标识符
      * @param maxIterations 最大撮合次数（防止gas耗尽）
      * @return totalTrades 成交的交易数量
      */
     function matchOrders(bytes32 tradingPair, uint256 maxIterations) external returns (uint256 totalTrades) {
+        return _matchOrdersInternal(tradingPair, maxIterations);
+    }
+
+    /**
+     * @dev 内部撮合逻辑
+     * @param tradingPair 交易对标识符
+     * @param maxIterations 最大撮合次数
+     * @return totalTrades 成交的交易数量
+     */
+    function _matchOrdersInternal(bytes32 tradingPair, uint256 maxIterations) internal returns (uint256 totalTrades) {
         OrderBookData storage book = orderBooks[tradingPair];
         totalTrades = 0;
 
@@ -1040,13 +1084,23 @@ contract OrderBook {
     }
 
     /**
-     * @notice 撮合市价单与限价单
+     * @notice 撮合市价单（外部调用接口，保留用于手动触发）
      * @dev 市价买单与最优卖价撮合，市价卖单与最优买价撮合
      * @param tradingPair 交易对标识符
      * @param maxIterations 最大撮合次数
      * @return totalTrades 成交的交易数量
      */
     function matchMarketOrders(bytes32 tradingPair, uint256 maxIterations) external returns (uint256 totalTrades) {
+        return _matchMarketOrdersInternal(tradingPair, maxIterations);
+    }
+
+    /**
+     * @dev 内部市价单撮合逻辑
+     * @param tradingPair 交易对标识符
+     * @param maxIterations 最大撮合次数
+     * @return totalTrades 成交的交易数量
+     */
+    function _matchMarketOrdersInternal(bytes32 tradingPair, uint256 maxIterations) internal returns (uint256 totalTrades) {
         OrderBookData storage book = orderBooks[tradingPair];
         totalTrades = 0;
 
@@ -1104,23 +1158,4 @@ contract OrderBook {
         return totalTrades;
     }
 
-    /**
-     * @notice 完整撮合：先撮合限价单，再撮合市价单
-     * @param tradingPair 交易对标识符
-     * @param maxIterations 最大撮合次数
-     * @return limitTrades 限价单成交数
-     * @return marketTrades 市价单成交数
-     */
-    function matchAll(bytes32 tradingPair, uint256 maxIterations)
-        external
-        returns (uint256 limitTrades, uint256 marketTrades)
-    {
-        // 先撮合限价单
-        limitTrades = this.matchOrders(tradingPair, maxIterations);
-
-        // 再撮合市价单
-        marketTrades = this.matchMarketOrders(tradingPair, maxIterations);
-
-        return (limitTrades, marketTrades);
-    }
 }
