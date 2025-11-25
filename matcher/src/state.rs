@@ -77,6 +77,11 @@ impl GlobalState {
         self.queued_requests.insert(request.request_id, request);
     }
 
+    /// 获取单个请求
+    pub fn get_request(&self, request_id: &U256) -> Option<QueuedRequest> {
+        self.queued_requests.get(request_id).map(|entry| entry.clone())
+    }
+
     /// 从队列中移除请求
     pub fn remove_request(&self, request_id: &U256) {
         self.queued_requests.remove(request_id);

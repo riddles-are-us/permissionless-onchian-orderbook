@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::contracts::OrderBook;
+use crate::match_simulator::MatchSimulator;
 use crate::state::GlobalState;
 use crate::types::*;
 use anyhow::{Context, Result};
@@ -13,10 +14,49 @@ pub struct MatchingEngine {
     state: GlobalState,
     provider: Arc<Provider<Ws>>,
     orderbook: OrderBook<SignerMiddleware<Arc<Provider<Ws>>, LocalWallet>>,
+    simulator: Arc<parking_lot::RwLock<MatchSimulator>>,
 }
 
 impl MatchingEngine {
     pub async fn new(config: Config, state: GlobalState) -> Result<Self> {
+        // 连接到节点
+        let ws = Ws::connect(&config.network.rpc_url)
+            .await
+            .context("Failed to connect to WebSocket")?;
+        let provider = Arc::new(Provider::new(ws));
+
+        // 创建钱包
+        let wallet: LocalWallet = config
+            .executor
+            .private_key
+            .parse::<LocalWallet>()?
+            .with_chain_id(config.network.chain_id);
+
+        // 创建签名中间件
+        let client = SignerMiddleware::new(provider.clone(), wallet);
+
+        // 创建 OrderBook 合约实例
+        let orderbook_addr: Address = config.contracts.orderbook.parse()?;
+        let orderbook = OrderBook::new(orderbook_addr, Arc::new(client));
+
+        // 创建 MatchSimulator
+        let simulator = Arc::new(parking_lot::RwLock::new(MatchSimulator::new()));
+
+        Ok(Self {
+            config,
+            state,
+            provider,
+            orderbook,
+            simulator,
+        })
+    }
+
+    /// 使用外部提供的 simulator 创建新实例
+    pub async fn new_with_simulator(
+        config: Config,
+        state: GlobalState,
+        simulator: Arc<parking_lot::RwLock<MatchSimulator>>,
+    ) -> Result<Self> {
         // 连接到节点
         let ws = Ws::connect(&config.network.rpc_url)
             .await
@@ -42,7 +82,13 @@ impl MatchingEngine {
             state,
             provider,
             orderbook,
+            simulator,
         })
+    }
+
+    /// 获取 simulator 的引用（用于 sync）
+    pub fn simulator(&self) -> Arc<parking_lot::RwLock<MatchSimulator>> {
+        self.simulator.clone()
     }
 
     /// 运行匹配引擎
@@ -57,8 +103,22 @@ impl MatchingEngine {
         let interval = Duration::from_millis(self.config.matching.matching_interval_ms);
         let mut ticker = tokio::time::interval(interval);
 
+        // 清理过期 pending changes 的计数器（每 10 次循环清理一次）
+        let mut cleanup_counter = 0;
+        let cleanup_timeout = Duration::from_secs(60); // 60 秒超时
+
         loop {
             ticker.tick().await;
+
+            // 定期清理过期的 pending changes
+            cleanup_counter += 1;
+            if cleanup_counter >= 10 {
+                cleanup_counter = 0;
+                let removed = self.simulator.write().cleanup_expired_changes(cleanup_timeout);
+                if removed > 0 {
+                    warn!("🧹 Cleaned up {} expired pending changes", removed);
+                }
+            }
 
             match self.process_batch().await {
                 Ok(processed) => {
@@ -223,7 +283,38 @@ impl MatchingEngine {
             match_result.order_ids.len()
         );
 
-        // 调用合约的 batchProcessRequests 函数
+        // 步骤 1: 预测每个订单的匹配结果
+        let mut predictions = Vec::new();
+        {
+            let simulator = self.simulator.read();
+            for request_id in &match_result.order_ids {
+                if let Some(request) = self.state.get_request(request_id) {
+                    // 只预测限价单和市价单
+                    if request.request_type == RequestType::PlaceOrder {
+                        let prediction = match request.order_type {
+                            OrderType::Limit => simulator.predict_limit_order_match(
+                                request.price,
+                                request.amount,
+                                request.is_ask,
+                            ),
+                            OrderType::Market => simulator.predict_market_order_match(
+                                request.amount,
+                                request.is_ask,
+                            ),
+                        };
+
+                        if !prediction.matched_order_ids.is_empty() {
+                            info!("  🔮 Predicted {} matches for request {}",
+                                prediction.matched_order_ids.len(), request_id);
+                        }
+
+                        predictions.push((request_id, prediction, request.is_ask));
+                    }
+                }
+            }
+        }
+
+        // 步骤 2: 调用合约的 batchProcessRequests 函数
         let tx = self
             .orderbook
             .batch_process_requests(
@@ -234,12 +325,25 @@ impl MatchingEngine {
             .gas_price(self.config.executor.gas_price_gwei * 1_000_000_000)
             .gas(self.config.executor.gas_limit);
 
-        // 发送交易
+        // 步骤 3: 发送交易
         let pending_tx = tx.send().await.context("Failed to send transaction")?;
+        let tx_hash = pending_tx.tx_hash();
 
-        info!("📝 Transaction sent: {:?}", pending_tx.tx_hash());
+        info!("📝 Transaction sent: {:?}", tx_hash);
 
-        // 等待交易确认
+        // 步骤 4: 记录预测为 pending（不立即应用）
+        {
+            let mut simulator = self.simulator.write();
+            for (_request_id, prediction, is_ask) in predictions {
+                simulator.apply_prediction_pending(&prediction, tx_hash, is_ask);
+            }
+            let pending_count = simulator.pending_changes_count();
+            if pending_count > 0 {
+                info!("  📋 Recorded {} pending changes for tx {:?}", pending_count, tx_hash);
+            }
+        }
+
+        // 步骤 5: 等待交易确认（仅用于日志和错误处理）
         let receipt = pending_tx
             .await?
             .context("Transaction failed")?;
@@ -249,26 +353,38 @@ impl MatchingEngine {
             error!("❌ Transaction failed with status: {:?}", receipt.status);
             error!("   Gas used: {}", receipt.gas_used.unwrap_or_default());
             error!("   {} events emitted (expected > 0)", receipt.logs.len());
+
+            // 回滚 pending changes
+            {
+                let mut simulator = self.simulator.write();
+                simulator.rollback_changes(tx_hash);
+                info!("  ↩️  Rolled back pending changes for failed tx");
+            }
+
             return Err(anyhow::anyhow!("Transaction reverted"));
         }
 
         info!("✅ Transaction confirmed in block: {:?}", receipt.block_number);
-
-        // 检查日志
         info!("  {} events emitted", receipt.logs.len());
 
-        // 更新本地状态：移除已处理的请求
+        // 交易成功，确认 pending changes
+        {
+            let mut simulator = self.simulator.write();
+            simulator.confirm_changes(tx_hash);
+            info!("  ✓ Confirmed pending changes for successful tx");
+        }
+
+        // 步骤 6: 更新本地状态：移除已处理的请求
+        // 注意：订单簿状态的更新由事件处理器通过 confirm_changes 完成
         for request_id in &match_result.order_ids {
             self.state.remove_request(request_id);
             debug!("  Removed request {} from local state", request_id);
         }
 
         // 更新队列头部
-        // 通过查找第一个未处理的请求来更新本地队列头
         if let Some(first_remaining) = self.state.get_head_requests(1).first() {
             self.state.update_queue_head(first_remaining.request_id);
         } else {
-            // 队列为空
             self.state.update_queue_head(U256::zero());
         }
 

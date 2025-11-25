@@ -1,5 +1,6 @@
 mod config;
 mod contracts;
+mod match_simulator;
 mod matcher;
 mod state;
 mod sync;
@@ -7,10 +8,12 @@ mod types;
 
 use anyhow::Result;
 use clap::Parser;
+use std::sync::Arc;
 use tracing::{info, Level};
 use tracing_subscriber;
 
 use crate::config::Config;
+use crate::match_simulator::MatchSimulator;
 use crate::matcher::MatchingEngine;
 use crate::sync::StateSynchronizer;
 
@@ -63,11 +66,19 @@ async fn main() -> Result<()> {
     info!("  OrderBook: {}", config.contracts.orderbook);
     info!("  Start Block: {}", config.sync.start_block);
 
+    // 创建共享的 MatchSimulator
+    let simulator = Arc::new(parking_lot::RwLock::new(MatchSimulator::new()));
+    info!("🔮 Match simulator created");
+
     // 创建状态同步器
-    let synchronizer = StateSynchronizer::new(config.clone()).await?;
+    let synchronizer = StateSynchronizer::new(config.clone(), simulator.clone()).await?;
 
     // 创建匹配引擎
-    let matcher = MatchingEngine::new(config.clone(), synchronizer.state()).await?;
+    let matcher = MatchingEngine::new_with_simulator(
+        config.clone(),
+        synchronizer.state(),
+        simulator.clone()
+    ).await?;
 
     // 启动同步器（在后台运行）
     let sync_handle = tokio::spawn(async move {
