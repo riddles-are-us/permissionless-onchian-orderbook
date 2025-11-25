@@ -115,10 +115,13 @@ function insertOrder(
 #### `insertMarketOrder()` - 插入市价单
 ```solidity
 function insertMarketOrder(
-    uint256 sequencerOrderId,  // Sequencer中的订单ID
-    uint256 insertAfterOrder   // 在哪个订单之后插入 (0=头部)
+    uint256 sequencerOrderId  // Sequencer中的订单ID
 ) external
 ```
+
+**说明**：
+- 市价单总是插入到队尾，保证 FIFO（先进先出）
+- 不需要提供插入位置，简化 API 并节省 gas
 
 #### `removeOrder()` - 删除限价单
 ```solidity

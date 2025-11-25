@@ -4,7 +4,8 @@
   "description": "OrderBook system with Hardhat",
   "scripts": {
     "test": "hardhat test",
-    "deploy": "hardhat run scripts/deploy.js --network localhost"
+    "deploy": "hardhat run scripts/deploy.js --network localhost",
+    "update-config": "node update_config.js"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^4.0.0",

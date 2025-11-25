@@ -141,11 +141,6 @@
         "name": "sequencerOrderId",
         "type": "uint256",
         "internalType": "uint256"
-      },
-      {
-        "name": "insertAfterOrder",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "outputs": [],

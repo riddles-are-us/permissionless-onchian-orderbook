@@ -348,7 +348,7 @@ contract OrderBook {
             sequencer.processRequest(requestId);
             emit OrderInserted(tradingPair, requestId, isAsk, price, amount);
         } else {
-            // 市价单
+            // 市价单 - 总是插入到队尾
             Order storage order = orders[requestId];
             order.id = requestId;
             order.trader = trader;
@@ -358,7 +358,7 @@ contract OrderBook {
             order.priceLevel = EMPTY;
 
             orderTradingPairs[requestId] = tradingPair;
-            _insertMarketOrderIntoList(tradingPair, isAsk, requestId, insertAfterOrder);
+            _insertMarketOrderAtTail(tradingPair, isAsk, requestId);
 
             sequencer.processRequest(requestId);
             emit MarketOrderInserted(tradingPair, requestId, isAsk, amount);
@@ -729,13 +729,11 @@ contract OrderBook {
     // ============ 市价单相关函数 ============
 
     /**
-     * @notice 插入市价单到订单簿
+     * @notice 插入市价单到订单簿（总是插入到队尾，保证FIFO）
      * @param sequencerOrderId Sequencer中的订单ID
-     * @param insertAfterOrder 要插入的订单的前一个订单ID（0表示插入到头部）
      */
     function insertMarketOrder(
-        uint256 sequencerOrderId,
-        uint256 insertAfterOrder
+        uint256 sequencerOrderId
     ) external {
         // 验证该订单是Sequencer队列的头部
         require(sequencer.isHeadOrder(sequencerOrderId), "Order is not at head of sequencer queue");
@@ -766,8 +764,8 @@ contract OrderBook {
         // 记录订单对应的交易对
         orderTradingPairs[sequencerOrderId] = tradingPair;
 
-        // 将订单插入到市价单列表中
-        _insertMarketOrderIntoList(tradingPair, isAsk, sequencerOrderId, insertAfterOrder);
+        // 将订单插入到市价单队尾（FIFO）
+        _insertMarketOrderAtTail(tradingPair, isAsk, sequencerOrderId);
 
         // 从Sequencer中处理该请求
         sequencer.processRequest(sequencerOrderId);
@@ -776,59 +774,36 @@ contract OrderBook {
     }
 
     /**
-     * @dev 将市价单插入到列表中
+     * @dev 将市价单插入到队尾（FIFO保证）
      */
-    function _insertMarketOrderIntoList(
+    function _insertMarketOrderAtTail(
         bytes32 tradingPair,
         bool isAsk,
-        uint256 orderId,
-        uint256 insertAfterOrder
+        uint256 orderId
     ) internal {
         OrderBookData storage book = orderBooks[tradingPair];
         Order storage order = orders[orderId];
 
-        if (insertAfterOrder == EMPTY) {
-            // 插入到头部
-            uint256 oldHead = isAsk ? book.marketAskHead : book.marketBidHead;
+        uint256 oldTail = isAsk ? book.marketAskTail : book.marketBidTail;
 
-            if (oldHead != EMPTY) {
-                orders[oldHead].prevOrderId = orderId;
-                order.nextOrderId = oldHead;
-            } else {
-                // 列表为空，同时设置tail
-                if (isAsk) {
-                    book.marketAskTail = orderId;
-                } else {
-                    book.marketBidTail = orderId;
-                }
-            }
-
+        if (oldTail == EMPTY) {
+            // 列表为空，设置为head和tail
             if (isAsk) {
                 book.marketAskHead = orderId;
+                book.marketAskTail = orderId;
             } else {
                 book.marketBidHead = orderId;
+                book.marketBidTail = orderId;
             }
         } else {
-            // 插入到指定订单后面
-            Order storage prevOrder = orders[insertAfterOrder];
-            require(prevOrder.id != 0, "Previous order does not exist");
-            require(prevOrder.isMarketOrder, "Previous order is not a market order");
+            // 插入到队尾
+            orders[oldTail].nextOrderId = orderId;
+            order.prevOrderId = oldTail;
 
-            uint256 nextOrderId = prevOrder.nextOrderId;
-
-            order.prevOrderId = insertAfterOrder;
-            order.nextOrderId = nextOrderId;
-            prevOrder.nextOrderId = orderId;
-
-            if (nextOrderId != EMPTY) {
-                orders[nextOrderId].prevOrderId = orderId;
+            if (isAsk) {
+                book.marketAskTail = orderId;
             } else {
-                // 插入到尾部
-                if (isAsk) {
-                    book.marketAskTail = orderId;
-                } else {
-                    book.marketBidTail = orderId;
-                }
+                book.marketBidTail = orderId;
             }
         }
     }
