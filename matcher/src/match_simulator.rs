@@ -553,6 +553,26 @@ impl MatchSimulator {
     pub fn pending_changes_count(&self) -> usize {
         self.pending_changes.len()
     }
+
+    /// 检查某个交易哈希是否有待确认的更改
+    ///
+    /// # 参数
+    /// * `tx_hash` - 要检查的交易哈希
+    ///
+    /// # 返回
+    /// * `true` - 如果存在该交易的待确认更改
+    /// * `false` - 如果不存在
+    pub fn is_pending_change(&self, tx_hash: H256) -> bool {
+        self.pending_changes.iter().any(|c| c.tx_hash == tx_hash)
+    }
+
+    /// 获取待确认更改的交易哈希列表
+    ///
+    /// # 返回
+    /// * 所有待确认更改的交易哈希
+    pub fn get_pending_tx_hashes(&self) -> Vec<H256> {
+        self.pending_changes.iter().map(|c| c.tx_hash).collect()
+    }
 }
 
 #[cfg(test)]

@@ -160,26 +160,32 @@ impl MatchingEngine {
                 // 4. 将预测记录为待确认（不立即更新状态）
                 self.simulator.apply_prediction_pending(&prediction, tx_hash, request.is_ask);
 
-                // 5. 等待链上确认
-                match self.wait_for_confirmation(tx_hash).await {
-                    Ok(_) => {
-                        info!("✅ Transaction confirmed: {:?}", tx_hash);
-                        // 6. 确认成功：应用待确认的更改
-                        self.simulator.confirm_changes(tx_hash);
-                    }
-                    Err(e) => {
-                        warn!("❌ Transaction failed: {}", e);
-                        // 7. 确认失败：回滚待确认的更改
-                        self.simulator.rollback_changes(tx_hash);
-                    }
-                }
-
+                // 注意：这里不等待确认，让事件监听器来处理！
                 Ok(())
             }
             Err(e) => {
                 warn!("❌ Failed to submit transaction: {}", e);
                 Err(e)
             }
+        }
+    }
+
+    /// 事件监听器 - 处理链上事件
+    pub async fn handle_trade_event(&mut self, event: TradeEvent) {
+        let tx_hash = event.transaction_hash;
+
+        // 关键：检查是否是我们预测的交易
+        if self.simulator.is_pending_change(tx_hash) {
+            info!("✅ Confirming predicted transaction: {:?}", tx_hash);
+            // 这是我们的预测，现在确认并应用
+            self.simulator.confirm_changes(tx_hash);
+
+            // 可选：验证预测准确性
+            // validate_prediction(&prediction, &event);
+        } else {
+            info!("📥 Processing external event: {:?}", tx_hash);
+            // 这是其他matcher或外部的交易，正常应用
+            self.apply_event_directly(event);
         }
     }
 
@@ -200,6 +206,33 @@ impl MatchingEngine {
 ```
 
 ## 关键设计：待确认状态模式 (Pending State Pattern) ✅
+
+### 核心原则：事件驱动确认 ⚠️ 重要
+
+**关键点：不要等待确认，让事件监听器来应用状态！**
+
+```rust
+// ❌ 错误做法：等待确认后立即应用
+self.simulator.apply_prediction_pending(&prediction, tx_hash, is_ask);
+self.wait_for_confirmation(tx_hash).await?;
+self.simulator.confirm_changes(tx_hash);  // 应用了
+// 问题：事件到达时会再次应用！重复！
+
+// ✅ 正确做法：记录pending，由事件监听器确认
+self.simulator.apply_prediction_pending(&prediction, tx_hash, is_ask);
+// 不等待！继续处理下一个订单
+
+// 事件监听器中：
+fn handle_event(event) {
+    if self.simulator.is_pending_change(event.tx_hash) {
+        // 这是我们的预测，确认并应用
+        self.simulator.confirm_changes(event.tx_hash);
+    } else {
+        // 外部事件，正常应用
+        apply_event_directly(event);
+    }
+}
+```
 
 ### 为什么需要待确认状态？
 
