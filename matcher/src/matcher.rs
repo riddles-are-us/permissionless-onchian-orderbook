@@ -343,35 +343,30 @@ impl MatchingEngine {
             }
         }
 
-        // 步骤 5: 等待交易确认（仅用于日志和错误处理）
-        let receipt = pending_tx
-            .await?
-            .context("Transaction failed")?;
-
-        // 检查交易是否成功
-        if receipt.status != Some(1.into()) {
-            error!("❌ Transaction failed with status: {:?}", receipt.status);
-            error!("   Gas used: {}", receipt.gas_used.unwrap_or_default());
-            error!("   {} events emitted (expected > 0)", receipt.logs.len());
-
-            // 回滚 pending changes
-            {
-                let mut simulator = self.simulator.write();
-                simulator.rollback_changes(tx_hash);
-                info!("  ↩️  Rolled back pending changes for failed tx");
+        // 步骤 5: 等待交易确认（仅用于检测失败并回滚）
+        match pending_tx.await {
+            Ok(Some(receipt)) => {
+                if receipt.status != Some(1.into()) {
+                    error!("❌ Transaction {:?} failed, rolling back pending changes", tx_hash);
+                    self.simulator.write().rollback_changes(tx_hash);
+                    return Err(anyhow::anyhow!("Transaction reverted"));
+                } else {
+                    info!("✅ Transaction {:?} confirmed, {} events emitted", tx_hash, receipt.logs.len());
+                    info!("  ⏳ Waiting for events to confirm pending changes...");
+                    // 注意：不在这里 confirm pending changes！
+                    // 事件处理器会通过 find_pending_tx_for_removed_order 来确认
+                }
             }
-
-            return Err(anyhow::anyhow!("Transaction reverted"));
-        }
-
-        info!("✅ Transaction confirmed in block: {:?}", receipt.block_number);
-        info!("  {} events emitted", receipt.logs.len());
-
-        // 交易成功，确认 pending changes
-        {
-            let mut simulator = self.simulator.write();
-            simulator.confirm_changes(tx_hash);
-            info!("  ✓ Confirmed pending changes for successful tx");
+            Ok(None) => {
+                warn!("❌ Transaction {:?} dropped, rolling back", tx_hash);
+                self.simulator.write().rollback_changes(tx_hash);
+                return Err(anyhow::anyhow!("Transaction dropped"));
+            }
+            Err(e) => {
+                error!("❌ Error waiting for transaction {:?}: {}, rolling back", tx_hash, e);
+                self.simulator.write().rollback_changes(tx_hash);
+                return Err(e.into());
+            }
         }
 
         // 步骤 6: 更新本地状态：移除已处理的请求

@@ -224,7 +224,7 @@ impl StateSynchronizer {
         orderbook: OrderBook<Provider<Ws>>,
         state: GlobalState,
         provider: Arc<Provider<Ws>>,
-        _simulator: Arc<parking_lot::RwLock<MatchSimulator>>,
+        simulator: Arc<parking_lot::RwLock<MatchSimulator>>,
     ) -> Result<()> {
         use crate::contracts::order_book::*;
 
@@ -249,7 +249,7 @@ impl StateSynchronizer {
                 Some(event) = trade_stream.next() => {
                     match event {
                         Ok(trade) => {
-                            debug!(
+                            info!(
                                 "🔄 Trade: pair={:?}, buy={}, sell={}, price={}, amount={}",
                                 trade.trading_pair,
                                 trade.buy_order_id,
@@ -257,8 +257,34 @@ impl StateSynchronizer {
                                 trade.price,
                                 trade.amount
                             );
-                            // Trade 事件本身不需要更新状态，OrderFilled 会处理
-                            // Pending changes 由 execute_batch 在交易确认时处理
+
+                            // 关键：Trade 事件到达时，检查是否匹配我们的 pending changes
+                            // 通过订单 ID 精确匹配，只确认属于我们的交易
+                            let sim_read = simulator.read();
+
+                            // 检查 buy_order_id 和 sell_order_id 是否在 pending changes 中
+                            let buy_tx = sim_read.find_pending_tx_for_removed_order(trade.buy_order_id);
+                            let sell_tx = sim_read.find_pending_tx_for_removed_order(trade.sell_order_id);
+
+                            drop(sim_read); // 释放读锁
+
+                            // 确认找到的 pending 交易
+                            let mut confirmed = std::collections::HashSet::new();
+                            if let Some(tx_hash) = buy_tx {
+                                confirmed.insert(tx_hash);
+                            }
+                            if let Some(tx_hash) = sell_tx {
+                                confirmed.insert(tx_hash);
+                            }
+
+                            if !confirmed.is_empty() {
+                                info!("  ✅ Confirming {} pending transaction(s) based on order match", confirmed.len());
+                                let mut sim = simulator.write();
+                                for tx_hash in confirmed {
+                                    sim.confirm_changes(tx_hash);
+                                    debug!("    Confirmed tx: {:?}", tx_hash);
+                                }
+                            }
                         }
                         Err(e) => warn!("Error receiving trade event: {}", e),
                     }

@@ -573,6 +573,28 @@ impl MatchSimulator {
     pub fn get_pending_tx_hashes(&self) -> Vec<H256> {
         self.pending_changes.iter().map(|c| c.tx_hash).collect()
     }
+
+    /// 查找包含某个被移除订单的 pending 交易
+    ///
+    /// 当收到 Trade 事件（订单被匹配）时，可以通过订单 ID 查找对应的 pending 交易
+    ///
+    /// # 参数
+    /// * `order_id` - 订单 ID
+    ///
+    /// # 返回
+    /// * 如果找到，返回包含该订单移除操作的交易哈希
+    pub fn find_pending_tx_for_removed_order(&self, order_id: U256) -> Option<H256> {
+        for pending in &self.pending_changes {
+            for change in &pending.changes {
+                if let StateChange::RemoveOrder { order_id: oid, .. } = change {
+                    if *oid == order_id {
+                        return Some(pending.tx_hash);
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
