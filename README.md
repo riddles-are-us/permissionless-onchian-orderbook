@@ -473,57 +473,89 @@ event OrderFilled(
 
 ### 概述
 
-基于 Rust 的链下撮合引擎，自动从 Sequencer 队列读取订单，计算正确的插入位置，并批量提交到 OrderBook。
+基于 Rust 的链下撮合引擎，通过**事件驱动**方式实时同步链上订单簿状态，使用本地模拟器计算正确的插入位置，并批量提交到 OrderBook。
 
 ### 核心功能
 
-- 🔄 **状态同步**: 从指定区块高度读取合约状态，通过 WebSocket 监听事件
-- 🎯 **智能匹配**: 自动计算每个订单在订单簿中的正确插入位置
+- 🔄 **事件驱动同步**: 通过链上事件实时更新本地订单簿状态
+- 🎯 **精确模拟**: `OrderBookSimulator` 严格镜像链上订单簿结构
 - 📦 **批量处理**: 批量调用 `batchProcessRequests` 节省 gas 成本
-- ⚡ **高性能**: 使用 DashMap 实现线程安全的状态管理
-- 📊 **实时监控**: 完整的日志系统，追踪匹配过程
+- ⚡ **深拷贝隔离**: 使用深拷贝隔离模拟计算，保证状态一致性
+- 📊 **实时监控**: 完整的日志系统，监控匹配引擎运行状态
+
+### 架构设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Matcher                               │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────────┐    ┌─────────────────────────────────┐ │
+│  │ StateSynchronizer│    │      MatchingEngine             │ │
+│  │                 │    │                                 │ │
+│  │ • 启动时同步状态  │    │ • 定期处理请求队列               │ │
+│  │ • 监听链上事件   │    │ • 计算 insertAfterPrice         │ │
+│  │ • 更新 GlobalState│   │ • 执行批量交易                  │ │
+│  └────────┬────────┘    └────────────┬────────────────────┘ │
+│           │                          │                       │
+│           ▼                          ▼                       │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │                    GlobalState                          │ │
+│  │  ┌──────────────────┐  ┌────────────────────────────┐  │ │
+│  │  │ queued_requests  │  │      orderbook             │  │ │
+│  │  │ (Sequencer队列)   │  │   (OrderBookSimulator)     │  │ │
+│  │  └──────────────────┘  └────────────────────────────┘  │ │
+│  └─────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 关键设计
+
+1. **事件驱动状态更新**: `GlobalState.orderbook` 只通过链上事件更新，保证本地与链上严格一致
+2. **深拷贝隔离模拟**: `clone_orderbook()` 创建完整深拷贝，模拟计算不影响原始状态
+3. **请求队列管理**: 只有交易成功后才移除请求，失败时自动重试
 
 ### 快速测试
 
 ```bash
 # 1. 启动 Anvil
-anvil
+anvil --block-time 1
 
-# 2. 部署合约并准备测试数据
-./test_matcher.sh
+# 2. 部署合约
+forge script script/Deploy.s.sol --broadcast --rpc-url http://127.0.0.1:8545
 
-# 3. 运行 Matcher
+# 3. 下测试订单
+forge script script/PlaceTestOrders.s.sol --broadcast --rpc-url http://127.0.0.1:8545
+
+# 4. 运行 Matcher
 cd matcher && cargo run -- --log-level debug
-
-# 4. 验证结果
-./verify_results.sh
 ```
 
 详细文档：
-- 📖 [Matcher 快速开始](QUICKSTART_MATCHER.md)
-- 📖 [完整测试指南](TESTING_GUIDE.md)
+- 📖 [Matcher 快速开始](doc/QUICKSTART_MATCHER.md)
+- 📖 [Matcher 使用指南](matcher/USAGE.md)
 - 📖 [Matcher 架构说明](matcher/ARCHITECTURE.md)
 
-### 工作流程
+### 数据流
 
 ```
-1. 启动 → 读取配置 → 连接到区块链 (WebSocket)
-           ↓
-2. 状态同步 → 从指定区块读取历史状态
-           ├─ 加载 Sequencer 队列
-           ├─ 加载订单簿价格层级
-           └─ 构建本地缓存
-           ↓
-3. 匹配循环 (每 3 秒)
-           ├─ 获取队列头部的 N 个请求
-           ├─ 计算每个订单的插入位置
-           │   ├─ 查找价格层级缓存
-           │   ├─ 如未命中，从链上读取
-           │   └─ 根据 Bid/Ask 确定正确位置
-           ├─ 构建批处理交易
-           └─ 提交并等待确认
-           ↓
-4. 事件监听 → 实时更新本地状态
+链上事件                    本地状态                    交易执行
+─────────────────────────────────────────────────────────────────
+PlaceOrderRequested ──────► queued_requests.add()
+                                   │
+                                   ▼
+                          MatchingEngine.process_batch()
+                                   │
+                          clone_orderbook() ──► 深拷贝
+                                   │
+                          simulate_insert() ──► 计算 insertAfterPrice
+                                   │
+                          execute_batch() ───► batchProcessRequests tx
+                                   │
+                                   ▼
+OrderInserted ────────────► orderbook.orders.insert()
+PriceLevelCreated ────────► orderbook.price_levels.insert()
+OrderFilled ──────────────► orderbook.orders.update()
+OrderRemoved ─────────────► orderbook.orders.remove()
 ```
 
 ## 未来扩展
@@ -541,23 +573,33 @@ cd matcher && cargo run -- --log-level debug
 
 ```
 orderbook/
-├── Sequencer.sol              # 订单排序器
-├── OrderBook.sol              # 订单簿核心
-├── Account.sol                # 账户和资金管理
+├── src/
+│   ├── Sequencer.sol          # 订单排序器
+│   ├── OrderBook.sol          # 订单簿核心
+│   └── Account.sol            # 账户和资金管理
 ├── script/                    # Foundry 部署脚本
 │   ├── Deploy.s.sol          # 合约部署
-│   └── PrepareTest.s.sol     # 测试数据准备
+│   └── PlaceTestOrders.s.sol # 测试订单脚本
 ├── test/                      # Foundry 测试
 │   └── OrderBook.t.sol       # 单元测试
 ├── matcher/                   # Rust Matcher 引擎
 │   ├── src/
-│   │   ├── main.rs           # 主入口
-│   │   ├── sync.rs           # 状态同步
-│   │   ├── matcher.rs        # 匹配引擎
-│   │   └── ...
-│   └── abi/                  # 合约 ABI
-├── test_matcher.sh           # 一键测试脚本
-└── *.md                      # 文档
+│   │   ├── main.rs               # 主入口
+│   │   ├── config.rs             # 配置管理
+│   │   ├── contracts.rs          # 合约绑定
+│   │   ├── types.rs              # 类型定义
+│   │   ├── state.rs              # GlobalState 状态管理
+│   │   ├── sync.rs               # 状态同步 + 事件监听
+│   │   ├── matcher.rs            # 匹配引擎
+│   │   └── orderbook_simulator.rs # 订单簿模拟器
+│   ├── abi/                  # 合约 ABI
+│   └── config.toml           # 配置文件
+├── doc/                       # 文档目录
+│   ├── QUICKSTART_MATCHER.md # Matcher 快速开始
+│   ├── TESTING_GUIDE.md      # 测试指南
+│   ├── DEPLOYMENT.md         # 部署指南
+│   └── ...                   # 其他文档
+└── deployments.json          # 部署地址
 ```
 
 ## 许可证

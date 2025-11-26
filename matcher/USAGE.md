@@ -2,15 +2,15 @@
 
 ## Overview
 
-The Matcher Engine is a Rust-based off-chain matching engine for the OrderBook protocol. It synchronizes state from the blockchain, calculates optimal insertion positions for orders, and submits batch transactions to minimize gas costs.
+The Matcher Engine is a Rust-based off-chain matching engine for the OrderBook protocol. It uses event-driven state synchronization to maintain a local replica of the on-chain orderbook, calculates optimal insertion positions using a local simulator, and submits batch transactions to minimize gas costs.
 
 ## Features
 
-- **State Synchronization**: Syncs historical state from a specific block height
-- **Event Monitoring**: Watches blockchain events to maintain incremental state
+- **Event-Driven Sync**: Real-time state updates through blockchain events
+- **Local Simulator**: `OrderBookSimulator` mirrors on-chain orderbook structure exactly
+- **Deep Copy Isolation**: Simulation calculations use deep copies, ensuring state consistency
 - **Batch Processing**: Groups multiple order requests into single transactions
-- **Off-chain Matching**: Calculates insertion positions off-chain to save gas
-- **Price Level Caching**: Maintains local cache of price levels for fast lookups
+- **Auto-Retry**: Failed transactions keep requests in queue for retry
 
 ## Prerequisites
 
@@ -29,22 +29,18 @@ rpc_url = "ws://localhost:8545"
 chain_id = 31337
 
 [contracts]
-account = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
-orderbook = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
-sequencer = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+account = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+orderbook = "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9"
+sequencer = "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9"
 
 [executor]
 private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-gas_price_gwei = 20
+gas_price_gwei = 1
 gas_limit = 5000000
 
 [matching]
 max_batch_size = 10
-matching_interval_ms = 1000
-
-[sync]
-start_block = 0
-sync_historical = true
+matching_interval_ms = 3000
 ```
 
 ### Configuration Parameters
@@ -66,10 +62,6 @@ sync_historical = true
 #### Matching
 - `max_batch_size`: Maximum number of orders to process in one batch
 - `matching_interval_ms`: Interval between batch processing (milliseconds)
-
-#### Sync
-- `start_block`: Block number to start syncing from (0 = current block)
-- `sync_historical`: Whether to sync historical state on startup
 
 ## Building
 
@@ -96,12 +88,6 @@ This will use the default `config.toml` in the current directory.
 ./target/release/matcher --config /path/to/config.toml
 ```
 
-### Override Start Block
-
-```bash
-./target/release/matcher --start-block 12345
-```
-
 ### Adjust Log Level
 
 ```bash
@@ -116,47 +102,70 @@ Available log levels: `error`, `warn`, `info`, `debug`, `trace`
 
 The matcher connects to the blockchain via WebSocket and loads contract ABIs.
 
-### 2. State Synchronization
+### 2. Historical State Sync
 
-- Reads the current queue head from the Sequencer contract
-- Traverses the request queue to load pending requests
-- Builds local cache of price levels and orders
+On startup, the matcher syncs the current state:
 
-### 3. Matching Loop
+1. **Sequencer Queue**: Reads `queueHead` and traverses the request queue
+2. **OrderBook State**:
+   - Reads `askHead`, `bidHead` from OrderBookData
+   - Traverses price level linked lists
+   - Loads orders for each price level
+
+### 3. Event Watching
+
+After initial sync, the matcher subscribes to events:
+
+**From Sequencer:**
+- `PlaceOrderRequested`: Add to local request queue
+- `RemoveOrderRequested`: Add to local request queue
+
+**From OrderBook:**
+- `OrderInserted`: Add order to local simulator
+- `PriceLevelCreated`: Add price level to local simulator
+- `PriceLevelRemoved`: Remove price level from simulator
+- `OrderFilled`: Update order's filled amount
+- `OrderRemoved`: Remove order from simulator
+- `Trade`: Log trade execution
+
+### 4. Matching Loop
 
 Every `matching_interval_ms`:
 
-1. **Fetch Requests**: Get up to `max_batch_size` requests from the queue
-2. **Calculate Positions**: For each request, determine the correct insertion position
-   - For ask orders: price ascending (low to high)
-   - For bid orders: price descending (high to low)
-3. **Build Transaction**: Create a batch transaction with all insertions
-4. **Submit**: Send transaction to the blockchain
-5. **Wait**: Confirm transaction and update local state
+1. **Fetch Requests**: Get up to `max_batch_size` requests from queue
+2. **Clone Orderbook**: Create deep copy of current simulator state
+3. **Calculate Positions**: For each request, simulate on the clone:
+   - `PlaceOrder`: Calculate `insertAfterPrice`
+   - `RemoveOrder`: Simulate removal for correct subsequent calculations
+4. **Build Transaction**: Create batch with all insertions
+5. **Submit**: Send `batchProcessRequests` transaction
+6. **Wait**: Confirm transaction
+7. **Cleanup**: Remove processed requests from queue (only on success)
 
-### 4. Price Level Cache
+### 5. State Consistency
 
-The matcher maintains a local cache of price levels to avoid unnecessary RPC calls:
+The key design ensures state consistency:
 
-- **Key**: Trading pair + price
-- **Value**: Price level ID, volume, head/tail order IDs
-- **Update**: Refreshed when orders are processed or events are received
+- **Event-Driven Updates**: `GlobalState.orderbook` only updates via chain events
+- **Deep Copy Isolation**: Simulations use cloned state, original unaffected
+- **Failure Handling**: Failed tx = no events = no state change = auto retry
 
 ## Architecture
 
 ```
 matcher/
 ├── src/
-│   ├── main.rs          # CLI entry point
-│   ├── config.rs        # Configuration management
-│   ├── contracts.rs     # Contract bindings (generated)
-│   ├── types.rs         # Data structures
-│   ├── state.rs         # Global state management
-│   ├── sync.rs          # State synchronization
-│   └── matcher.rs       # Matching engine
-├── abi/                 # Contract ABIs (JSON)
-├── config.toml          # Configuration file
-└── Cargo.toml          # Rust dependencies
+│   ├── main.rs               # CLI entry point
+│   ├── config.rs             # Configuration management
+│   ├── contracts.rs          # Contract bindings (generated)
+│   ├── types.rs              # Data structures
+│   ├── state.rs              # GlobalState management
+│   ├── sync.rs               # State synchronization + event watching
+│   ├── matcher.rs            # Matching engine
+│   └── orderbook_simulator.rs # Orderbook simulator (mirrors chain)
+├── abi/                      # Contract ABIs (JSON)
+├── config.toml               # Configuration file
+└── Cargo.toml               # Rust dependencies
 ```
 
 ## Monitoring
@@ -164,19 +173,25 @@ matcher/
 The matcher outputs structured logs:
 
 ```
-[INFO] 🔄 Starting state synchronizer
-[INFO] 📚 Syncing historical state from block 0
-[DEBUG]   Queue head: 1
-[DEBUG]   Loaded 3 requests from queue
-[INFO] ✅ Historical state synced to block 0
-[INFO] 🎯 Starting matching engine
-[INFO]   Batch size: 10
-[INFO]   Interval: 1000ms
-[INFO] 📤 Executing batch with 3 orders
-[INFO] 📝 Transaction sent: 0x1234...
-[INFO] ✅ Transaction confirmed in block: Some(123)
-[INFO]   3 events emitted
-[INFO] ✨ Processed 3 requests
+🚀 Starting OrderBook Matcher
+📋 Configuration loaded
+🔄 Starting state synchronizer
+📚 Syncing historical state at block 100
+📊 Trading pair: askHead=201, bidHead=200
+✅ Historical state synced at block 100
+👀 Watching for OrderBook and Sequencer events from block 100
+📡 Starting OrderBook event listener from block 100
+📡 Starting Sequencer event listener from block 100
+🎯 Starting matching engine
+📥 PlaceOrderRequested: requestId=11, price=199500000000, isAsk=false
+📊 Simulator state: ask_head=201, bid_head=200, 10 price_levels, 10 orders
+PlaceOrder 11 (price=199500000000, is_ask=false): insertAfterPrice=200000000000
+📤 Executing batch with 1 orders
+📝 Transaction sent: 0xabc...
+📦 OrderInserted: orderId=11, price=199500000000, amount=20000000, isAsk=false
+📊 PriceLevelCreated: price=199500000000, isAsk=false
+✅ Transaction confirmed, 4 events emitted
+✨ Processed 1 requests
 ```
 
 ## Troubleshooting
@@ -200,16 +215,21 @@ If transactions revert:
 
 If state sync fails:
 - Verify contract addresses are deployed at the configured addresses
-- Check if `start_block` is valid
-- Ensure the contracts are on the correct chain
+- Check the contracts are on the correct chain
+- Review logs for specific error messages
 
-### Performance Tuning
+### Simulator Mismatch
 
-To optimize performance:
+If `insertAfterPrice` calculations are wrong:
+- Ensure all OrderBook events are being processed
+- Check that price level composite keys match chain logic
+- Verify ask/bid sorting direction
+
+## Performance Tuning
+
 - **Increase `max_batch_size`**: Process more orders per transaction (higher gas)
 - **Decrease `matching_interval_ms`**: Process batches more frequently
 - **Adjust `gas_price_gwei`**: Higher price = faster confirmation
-- **Enable historical sync**: Set `sync_historical = true` for complete state
 
 ## Security Considerations
 
@@ -218,13 +238,57 @@ To optimize performance:
 - **Gas Limits**: Set reasonable limits to prevent excessive spending
 - **Monitoring**: Monitor executor account balance and transaction status
 
+## Testing
+
+### Unit Tests
+
+```bash
+cd matcher
+cargo test
+```
+
+The `orderbook_simulator.rs` includes comprehensive tests:
+- Single order insertion
+- Multiple orders same side
+- Ask order sorting
+- Cross-price matching
+- Full match removes price level
+- Batch orders with matching
+
+### Integration Test
+
+```bash
+# Terminal 1: Start Anvil
+anvil --block-time 1
+
+# Terminal 2: Deploy contracts
+forge script script/Deploy.s.sol --broadcast --rpc-url http://127.0.0.1:8545
+
+# Terminal 3: Place test orders
+forge script script/PlaceTestOrders.s.sol --broadcast --rpc-url http://127.0.0.1:8545
+
+# Terminal 4: Run matcher
+cd matcher
+cargo run -- -l debug
+```
+
+## Supported Request Types
+
+### PlaceOrder (Limit)
+
+Calculates `insertAfterPrice` for correct linked list insertion:
+- Ask orders: sorted by price ascending (low to high)
+- Bid orders: sorted by price descending (high to low)
+
+### RemoveOrder
+
+Simulates order removal to ensure subsequent insertions calculate correct positions.
+
 ## Future Enhancements
 
-- [ ] Event stream processing for real-time state updates
-- [ ] Multi-threaded batch processing
-- [ ] Advanced order matching algorithms
-- [ ] MEV protection strategies
+- [ ] Market order support
+- [ ] Multi-trading pair support
+- [ ] WebSocket reconnection handling
 - [ ] Metrics and monitoring dashboard
 - [ ] Automatic gas price estimation
-- [ ] Transaction retry logic with backoff
-- [ ] Support for multiple trading pairs
+- [ ] MEV protection strategies

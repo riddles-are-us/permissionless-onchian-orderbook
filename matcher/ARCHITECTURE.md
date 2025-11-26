@@ -3,64 +3,157 @@
 ## 概述
 
 Matcher 是一个链下撮合引擎，负责：
-1. 从区块链同步订单簿状态
-2. 计算新订单的正确插入位置
-3. 批量调用链上合约完成订单插入
+1. 通过链上事件实时同步订单簿状态
+2. 使用本地模拟器计算新订单的正确插入位置
+3. 批量调用链上合约完成订单处理
+
+## 核心架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Matcher                               │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────────┐    ┌─────────────────────────────────┐ │
+│  │ StateSynchronizer│    │      MatchingEngine             │ │
+│  │                 │    │                                 │ │
+│  │ • 启动时同步状态  │    │ • 定期处理请求队列               │ │
+│  │ • 监听链上事件   │    │ • 计算 insertAfterPrice         │ │
+│  │ • 更新 GlobalState│   │ • 执行批量交易                  │ │
+│  └────────┬────────┘    └────────────┬────────────────────┘ │
+│           │                          │                       │
+│           ▼                          ▼                       │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │                    GlobalState                          │ │
+│  │  ┌──────────────────┐  ┌────────────────────────────┐  │ │
+│  │  │ queued_requests  │  │      orderbook             │  │ │
+│  │  │ (Sequencer队列)   │  │   (OrderBookSimulator)     │  │ │
+│  │  │                  │  │  • ask_head/tail           │  │ │
+│  │  │                  │  │  • bid_head/tail           │  │ │
+│  │  │                  │  │  • price_levels: HashMap   │  │ │
+│  │  │                  │  │  • orders: HashMap         │  │ │
+│  │  └──────────────────┘  └────────────────────────────┘  │ │
+│  └─────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## 核心设计原则
 
-### 1. 状态驱动（State-Driven）
+### 1. 事件驱动状态更新
 
-所有决策基于本地维护的状态缓存：
-- **优点**：快速响应，减少 RPC 调用
-- **挑战**：需要保证状态一致性
+**唯一真实来源**：`GlobalState.orderbook` 只通过链上事件更新，保证本地状态与链上严格一致。
 
-### 2. 事件驱动（Event-Driven）
+```rust
+// 只有这些事件处理器才能修改 orderbook 状态
+fn handle_order_inserted(state: &GlobalState, event: OrderInserted) {
+    let mut orderbook = state.orderbook.write();
+    orderbook.add_existing_order(order);
+}
 
-通过监听合约事件增量更新状态：
-- **优点**：实时性好，资源消耗低
-- **挑战**：需要处理事件丢失和重复
+fn handle_price_level_created(state: &GlobalState, event: PriceLevelCreated) {
+    let mut orderbook = state.orderbook.write();
+    orderbook.add_existing_price_level(level, is_ask);
+}
+```
 
-### 3. 批量处理（Batch Processing）
+### 2. 深拷贝隔离模拟
 
-批量调用链上合约：
-- **优点**：降低 gas 成本，提高吞吐量
-- **挑战**：需要权衡批量大小和延迟
+**模拟计算不影响原始状态**：每次批处理前，使用 `clone_orderbook()` 创建完整深拷贝。
+
+```rust
+fn calculate_insert_positions(&self, requests: &[QueuedRequest]) -> MatchResult {
+    // 深拷贝当前状态
+    let mut sim = self.state.clone_orderbook();
+
+    // 在拷贝上模拟操作
+    for request in requests {
+        let insert_after = sim.simulate_insert_order(...);
+        // 模拟会更新 sim，但不影响 GlobalState.orderbook
+    }
+}
+```
+
+**深拷贝实现**：Rust 的 `#[derive(Clone)]` 对 `HashMap<U256, SimOrder>` 会递归克隆所有键值对，是真正的深拷贝。
+
+### 3. 请求队列管理
+
+**只有成功后才移除**：交易失败时请求保留在队列中，下轮重试。
+
+```rust
+async fn execute_batch(&self, result: &MatchResult) -> Result<()> {
+    let receipt = tx.send().await?.await?;
+
+    if receipt.status == Some(1.into()) {
+        // 只有交易成功才移除请求
+        for request_id in &result.order_ids {
+            self.state.remove_request(request_id);
+        }
+    }
+    // 失败时不移除，请求保留在队列中
+}
+```
 
 ## 模块详解
 
-### 1. State（状态管理）
+### 1. GlobalState（全局状态）
 
 ```rust
 pub struct GlobalState {
-    // Sequencer 请求队列
-    queued_requests: DashMap<U256, QueuedRequest>,
-    queue_head: RwLock<U256>,
+    /// Sequencer 请求队列: request_id -> QueuedRequest
+    pub queued_requests: Arc<DashMap<U256, QueuedRequest>>,
 
-    // OrderBook 缓存
-    price_levels: DashMap<TradingPair, PriceLevelCache>,
-    orders: DashMap<U256, Order>,
-    orderbook_data: DashMap<TradingPair, OrderBookData>,
+    /// 队列头部指针
+    pub queue_head: Arc<RwLock<U256>>,
+
+    /// 订单簿模拟器（与链上结构一致）
+    pub orderbook: Arc<RwLock<OrderBookSimulator>>,
+
+    /// 当前同步区块高度
+    pub current_block: Arc<RwLock<u64>>,
 }
 ```
 
 **设计要点**：
-- 使用 `DashMap` 实现无锁并发访问
-- 使用 `RwLock` 保护单值字段
-- 按交易对分区存储价格层级
+- 使用 `DashMap` 实现无锁并发访问队列
+- 使用 `RwLock` 保护订单簿模拟器
+- `clone_orderbook()` 提供深拷贝用于模拟计算
 
-**状态一致性保证**：
-1. 单一写入源（事件处理）
-2. 原子更新操作
-3. 定期状态校验（TODO）
+### 2. OrderBookSimulator（订单簿模拟器）
 
-### 2. Sync（状态同步器）
+严格按照链上 OrderBook.sol 的逻辑和数据结构实现：
+
+```rust
+pub struct OrderBookSimulator {
+    // 限价订单簿头尾指针
+    pub ask_head: U256,  // 最低卖价
+    pub ask_tail: U256,
+    pub bid_head: U256,  // 最高买价
+    pub bid_tail: U256,
+
+    /// 价格层级: composite_key -> SimPriceLevel
+    /// Ask 用 price，Bid 用 price | (1 << 255)
+    pub price_levels: HashMap<U256, SimPriceLevel>,
+
+    /// 订单: order_id -> SimOrder
+    pub orders: HashMap<U256, SimOrder>,
+}
+```
+
+**价格层级复合键**：
+- Ask 订单使用 `price` 本身
+- Bid 订单使用 `price | (1 << 255)` 区分
+
+**核心方法**：
+- `simulate_insert_order()`: 模拟插入订单，返回 insertAfterPrice
+- `simulate_remove_order()`: 模拟移除订单
+- `find_insert_position()`: 计算正确的插入位置
+
+### 3. StateSynchronizer（状态同步器）
 
 ```rust
 pub struct StateSynchronizer {
-    provider: Provider<Ws>,
-    sequencer: Sequencer<Provider<Ws>>,
-    orderbook: OrderBook<Provider<Ws>>,
+    provider: Arc<Provider<Ws>>,
+    sequencer: Sequencer<Arc<Provider<Ws>>>,
+    orderbook: OrderBook<Arc<Provider<Ws>>>,
     state: GlobalState,
 }
 ```
@@ -75,8 +168,9 @@ startup()
 │   │   ├─ read queue_head
 │   │   └─ traverse queue
 │   └─ sync_orderbook_state()
-│       ├─ read price_levels
-│       └─ build price_cache
+│       ├─ read askHead/bidHead
+│       ├─ traverse price levels
+│       └─ load orders
 │
 └─ watch_events()
     ├─ subscribe(sequencer.events())
@@ -86,54 +180,74 @@ startup()
         └─ handle_orderbook_event()
 ```
 
-**事件处理**：
-
-| 事件 | 来源 | 处理 |
-|------|------|------|
-| RequestAdded | Sequencer | 添加到队列 |
-| RequestProcessed | Sequencer | 从队列移除 |
-| PriceLevelCreated | OrderBook | 更新价格索引 |
-| OrderInserted | OrderBook | 更新订单状态 |
-| OrderRemoved | OrderBook | 移除订单 |
-
-### 3. Matcher（匹配引擎）
+### 4. MatchingEngine（匹配引擎）
 
 ```rust
 pub struct MatchingEngine {
-    orderbook: OrderBook<SignerMiddleware>,
-    state: GlobalState,
     config: Config,
+    state: GlobalState,
+    orderbook: OrderBook<SignerMiddleware<...>>,
 }
 ```
 
-**匹配算法**：
+**处理流程**：
 
 ```rust
-fn calculate_insert_positions(requests: &[QueuedRequest]) -> MatchResult {
-    for request in requests {
-        // 1. 获取价格层级缓存
-        let cache = get_price_cache(request.trading_pair, request.is_ask);
+async fn process_batch(&self) -> Result<usize> {
+    // 1. 获取队列中的请求
+    let requests = self.state.get_head_requests(max_batch_size);
 
-        // 2. 查找已存在的价格层级
-        if let Some(level_id) = cache.get(request.price) {
-            return (request.id, level_id, 0);
-        }
+    // 2. 使用模拟器计算插入位置
+    let result = self.calculate_insert_positions_with_simulator(&requests)?;
 
-        // 3. 找到正确的插入位置
-        let insert_after = find_position(
-            cache,
-            request.price,
-            request.is_ask
-        );
+    // 3. 执行批量处理
+    self.execute_batch(&result).await?;
 
-        result.add(request.id, insert_after, 0);
-    }
+    Ok(result.len())
 }
 ```
 
-**插入位置算法**：
+## 数据流
 
-对于买单（Bid），价格从高到低：
+```
+链上事件                    本地状态                    交易执行
+─────────────────────────────────────────────────────────────────
+PlaceOrderRequested ──────► queued_requests.add()
+                                   │
+                                   ▼
+                          MatchingEngine.process_batch()
+                                   │
+                          clone_orderbook() ──► 深拷贝
+                                   │
+                          simulate_insert() ──► 计算 insertAfterPrice
+                                   │
+                          execute_batch() ───► batchProcessRequests tx
+                                   │
+                                   ▼
+OrderInserted ────────────► orderbook.orders.insert()
+PriceLevelCreated ────────► orderbook.price_levels.insert()
+OrderFilled ──────────────► orderbook.orders.update()
+OrderRemoved ─────────────► orderbook.orders.remove()
+PriceLevelRemoved ────────► orderbook.price_levels.remove()
+```
+
+## 监听的事件
+
+| 事件 | 来源 | 处理 |
+|------|------|------|
+| `PlaceOrderRequested` | Sequencer | 添加到请求队列 |
+| `RemoveOrderRequested` | Sequencer | 添加到请求队列 |
+| `OrderInserted` | OrderBook | 更新 orderbook.orders |
+| `PriceLevelCreated` | OrderBook | 更新 orderbook.price_levels |
+| `PriceLevelRemoved` | OrderBook | 从 orderbook 移除价格层级 |
+| `OrderFilled` | OrderBook | 更新订单 filled_amount |
+| `OrderRemoved` | OrderBook | 从 orderbook 移除订单 |
+| `Trade` | OrderBook | 记录交易日志 |
+
+## 插入位置算法
+
+### Bid（买单）- 价格从高到低
+
 ```
 [2000] -> [1950] -> [1900]
   ^         ^         ^
@@ -142,10 +256,11 @@ fn calculate_insert_positions(requests: &[QueuedRequest]) -> MatchResult {
 插入 1960:
 - 遍历：2000 (1960 < 2000, 继续)
 - 遍历：1950 (1960 > 1950, 插入到这里)
-- 返回：insertAfter = level_id(2000)
+- 返回：insertAfterPrice = 2000
 ```
 
-对于卖单（Ask），价格从低到高：
+### Ask（卖单）- 价格从低到高
+
 ```
 [2100] -> [2150] -> [2200]
   ^         ^         ^
@@ -154,95 +269,79 @@ fn calculate_insert_positions(requests: &[QueuedRequest]) -> MatchResult {
 插入 2140:
 - 遍历：2100 (2140 > 2100, 继续)
 - 遍历：2150 (2140 < 2150, 插入到这里)
-- 返回：insertAfter = level_id(2100)
+- 返回：insertAfterPrice = 2100
 ```
 
-**批量执行**：
+## 状态一致性保证
+
+### 交易失败场景
+
+当 `batchProcessRequests` 交易失败时：
+
+1. **模拟状态隔离**：模拟计算使用深拷贝，不影响 `GlobalState.orderbook`
+2. **事件驱动更新**：`GlobalState.orderbook` 只通过链上事件更新
+3. **交易失败 = 无事件**：Revert 的交易不会发出事件
+4. **请求保留**：`remove_request()` 只在成功后调用
+5. **自动重试**：失败的请求保留在队列中，下轮重新处理
+
+```
+交易失败流程：
+tx.send() -> revert
+     │
+     ├── 无事件发出
+     │     └── GlobalState.orderbook 保持不变
+     │
+     └── execute_batch() 返回 Err
+           └── requests 保留在队列中
+                 └── 下一轮重试
+```
+
+## 并发模型
 
 ```rust
-async fn execute_batch(result: &MatchResult) -> Result<()> {
-    // 构造交易
-    let tx = orderbook.batch_process_requests(
-        result.order_ids,
-        result.insert_after_price_levels,
-        result.insert_after_orders
-    )
-    .gas_price(config.gas_price * 1e9)
-    .gas(config.gas_limit);
+// StateSynchronizer 和 MatchingEngine 并行运行
+tokio::spawn(synchronizer.run());  // 事件监听
+tokio::spawn(matcher.run());       // 批量处理
 
-    // 发送交易
-    let pending = tx.send().await?;
+// 使用 DashMap 支持并发读写
+state.queued_requests  // 多线程安全
 
-    // 等待确认
-    let receipt = pending.await?;
-
-    // 验证结果
-    verify_receipt(receipt)?;
-}
+// 使用 RwLock 保护订单簿
+state.orderbook  // 读多写少场景优化
 ```
 
 ## 性能优化
 
-### 1. 缓存策略
+### 1. 本地模拟器
 
-**价格层级缓存**：
-```rust
-struct PriceLevelCache {
-    price_to_level: BTreeMap<U256, U256>,  // 价格 -> 层级ID
-    levels: BTreeMap<U256, PriceLevel>,    // 层级ID -> 数据
-}
-```
+- 所有 insertAfterPrice 计算在本地完成
+- 无需 RPC 调用查询链上状态
+- O(n) 遍历价格层级链表
 
-**优势**：
-- O(log n) 查找时间
-- 自动排序
-- 减少 RPC 调用
+### 2. 深拷贝策略
 
-**更新策略**：
-- 监听 PriceLevelCreated 事件
-- 定期全量刷新（TODO）
-- LRU 淘汰策略（TODO）
+- 每批处理只克隆一次
+- HashMap 克隆是 O(n) 但只在批处理开始时执行
+- 避免了多次同步的开销
 
-### 2. 并发处理
+### 3. 批量处理
 
-```rust
-// 状态同步和匹配引擎并行运行
-tokio::spawn(synchronizer.run());
-tokio::spawn(matcher.run());
-
-// 使用 DashMap 支持并发读写
-state.queued_requests  // 多线程安全
-state.price_levels     // 多线程安全
-```
-
-### 3. 批量大小优化
-
-**权衡**：
-- 批量大 → gas 高，吞吐量高，延迟高
-- 批量小 → gas 低，吞吐量低，延迟低
-
-**动态调整**（TODO）：
-```rust
-match queue_size {
-    0..10 => batch_size = 10,
-    10..50 => batch_size = 50,
-    50.. => batch_size = 100,
-}
-```
+- 多个订单打包成一笔交易
+- 降低 gas 成本
+- 可配置批量大小
 
 ## 错误处理
 
 ### 1. 网络错误
 
 ```rust
-// WebSocket 断连重连
+// WebSocket 断连后自动重连
 loop {
     match watch_events().await {
         Ok(_) => break,
         Err(e) => {
             warn!("Connection lost: {}", e);
             sleep(Duration::from_secs(5)).await;
-            // 重新连接
         }
     }
 }
@@ -250,137 +349,22 @@ loop {
 
 ### 2. 交易失败
 
-```rust
-// 交易重试机制
-for retry in 0..MAX_RETRIES {
-    match execute_batch(result).await {
-        Ok(_) => break,
-        Err(e) if is_retriable(&e) => {
-            warn!("Retry {}/{}: {}", retry, MAX_RETRIES, e);
-            increase_gas_price();
-        }
-        Err(e) => return Err(e),
-    }
-}
-```
+- 交易 revert 时记录错误日志
+- 请求保留在队列中
+- 下一个周期自动重试
 
 ### 3. 状态不一致
 
-```rust
-// 定期状态校验
-async fn verify_state() {
-    let chain_head = sequencer.queue_head().await?;
-    let local_head = state.queue_head.read();
-
-    if chain_head != *local_head {
-        warn!("State mismatch, resyncing...");
-        resync_state().await?;
-    }
-}
-```
-
-## 监控指标
-
-### 1. 性能指标
-
-- `matching_latency`: 匹配延迟
-- `batch_size`: 批量大小
-- `gas_used`: Gas 消耗
-- `throughput`: 吞吐量（订单/秒）
-
-### 2. 健康指标
-
-- `sync_lag`: 同步延迟（区块）
-- `event_backlog`: 待处理事件数
-- `state_size`: 状态大小
-
-### 3. 错误指标
-
-- `tx_failure_rate`: 交易失败率
-- `connection_errors`: 连接错误次数
-- `state_mismatches`: 状态不一致次数
-
-## 扩展性设计
-
-### 1. 多交易对支持
-
-```rust
-// 每个交易对独立处理
-for trading_pair in config.trading_pairs {
-    tokio::spawn(async move {
-        let matcher = MatchingEngine::new(trading_pair);
-        matcher.run().await
-    });
-}
-```
-
-### 2. 分布式部署
-
-```rust
-// 使用 Redis 共享状态
-struct DistributedState {
-    redis: RedisClient,
-    local_cache: GlobalState,
-}
-
-// 通过 Pub/Sub 同步
-redis.subscribe("orderbook.events")
-```
-
-### 3. 负载均衡
-
-```rust
-// 多个 Matcher 实例
-// 通过租约机制选主
-struct LeaderElection {
-    coordinator: ZooKeeper,
-}
-
-if leader_election.is_leader() {
-    matcher.run().await
-} else {
-    standby().await
-}
-```
-
-## 安全考虑
-
-### 1. 私钥管理
-
-```rust
-// 使用密钥管理服务
-let wallet = load_wallet_from_kms()?;
-
-// 或环境变量
-let pk = env::var("PRIVATE_KEY")?;
-```
-
-### 2. 访问控制
-
-```rust
-// 检查执行者权限
-require(
-    msg.sender == authorized_matcher,
-    "Unauthorized"
-);
-```
-
-### 3. 速率限制
-
-```rust
-// 限制交易频率
-let rate_limiter = RateLimiter::new(10, Duration::from_secs(1));
-rate_limiter.check().await?;
-```
+- 事件驱动保证最终一致性
+- 如果检测到不一致，可重启同步
 
 ## 未来改进
 
 - [ ] 实现状态快照和恢复
 - [ ] 添加 Prometheus 指标导出
-- [ ] 支持多链部署
+- [ ] 支持多交易对并行处理
 - [ ] 实现智能 gas 定价
 - [ ] 添加 MEV 保护
-- [ ] 支持订单路由和拆分
-- [ ] 实现 L2 集成
-- [ ] 添加测试覆盖率
+- [ ] 支持 WebSocket 断线重连
+- [ ] 添加更多单元测试
 - [ ] 性能压测和优化
