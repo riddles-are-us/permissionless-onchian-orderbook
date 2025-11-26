@@ -7,63 +7,96 @@ import "../MockERC20.sol";
 
 /**
  * @title PlaceMatchingOrders
- * @notice 下两个会自动匹配的订单，用于测试自动撮合功能
+ * @notice 下会触发撮合的订单，用于测试 matcher 对撮合情况的处理
+ *
+ * 当前订单簿状态（假设）:
+ * - Bid (买单): 价格从高到低 2000, 1990, 1980, 1970, 1960
+ * - Ask (卖单): 价格从低到高 2010, 2020, 2030, 2040, 2050
+ *
+ * 测试场景: 下一批价格会交叉的订单
+ * - 卖单 at 1990, 2000 (会和现有买单撮合)
+ * - 买单 at 2010, 2020 (会和现有卖单撮合)
  */
 contract PlaceMatchingOrders is Script {
     function run() external {
         // 从 deployments.json 读取配置
         string memory json = vm.readFile("deployments.json");
 
-        address wethAddr = vm.parseJsonAddress(json, ".weth");
-        address usdcAddr = vm.parseJsonAddress(json, ".usdc");
         address sequencerAddr = vm.parseJsonAddress(json, ".sequencer");
         bytes32 pairId = vm.parseJsonBytes32(json, ".pairId");
 
-        MockERC20 weth = MockERC20(wethAddr);
-        MockERC20 usdc = MockERC20(usdcAddr);
         Sequencer sequencer = Sequencer(sequencerAddr);
 
         vm.startBroadcast();
 
-        console.log("\n=== Placing Matching Orders ===\n");
+        console.log("\n=== Placing Orders That Will Trigger Matching ===\n");
+        console.log("Current orderbook (expected):");
+        console.log("  Bid head: 2000 USDC");
+        console.log("  Ask head: 2010 USDC");
+        console.log("");
 
-        // 1. 先下一个卖单：1 WETH @ 2000 USDC
-        console.log("1. Placing SELL order: 1 WETH @ 2000 USDC");
-        (uint256 sellOrderId, uint256 sellRequestId) = sequencer.placeLimitOrder(
-            pairId,
-            true,                    // is_ask = true (sell)
-            2000 * 10**8,           // price = 2000 USDC
-            1 * 10**8               // amount = 1 WETH
+        // 下4个卖单，其中2个价格会和买单交叉
+        console.log("Placing SELL orders:");
+
+        // 卖单1: @ 1990 USDC (低于最高买价 2000，会被撮合)
+        (uint256 reqId1,) = sequencer.placeLimitOrder(
+            pairId, true, 1990 * 10**8, 5 * 10**6  // 0.05 WETH
         );
-        console.log("   Sell order placed:");
-        console.log("     Order ID:", sellOrderId);
-        console.log("     Request ID:", sellRequestId);
+        console.log("  [1] Sell @ 1990 USDC, 0.05 WETH - WILL MATCH with bid", reqId1);
 
-        // 2. 再下一个买单：1 WETH @ 2000 USDC（价格相同，会匹配）
-        console.log("\n2. Placing BUY order: 1 WETH @ 2000 USDC");
-        console.log("   This order should AUTO-MATCH with the sell order!\n");
-
-        (uint256 buyOrderId, uint256 buyRequestId) = sequencer.placeLimitOrder(
-            pairId,
-            false,                   // is_ask = false (buy)
-            2000 * 10**8,           // price = 2000 USDC
-            1 * 10**8               // amount = 1 WETH
+        // 卖单2: @ 2000 USDC (等于最高买价 2000，会被撮合)
+        (uint256 reqId2,) = sequencer.placeLimitOrder(
+            pairId, true, 2000 * 10**8, 5 * 10**6  // 0.05 WETH
         );
-        console.log("   Buy order placed:");
-        console.log("     Order ID:", buyOrderId);
-        console.log("     Request ID:", buyRequestId);
+        console.log("  [2] Sell @ 2000 USDC, 0.05 WETH - WILL MATCH with bid", reqId2);
 
-        console.log("\n=== Orders placed successfully! ===");
-        console.log("Sell Request ID:", sellRequestId);
-        console.log("Buy Request ID:", buyRequestId);
-        console.log("\nExpected behavior:");
-        console.log("  1. Matcher will process sellRequestId first");
-        console.log("  2. Matcher will insert sell order into orderbook");
-        console.log("  3. Matcher will process buyRequestId");
-        console.log("  4. When buy order is inserted, AUTO-MATCH should trigger!");
-        console.log("  5. Trade event should be emitted");
-        console.log("  6. Both orders should be fully filled and removed");
-        console.log("\nWatch the matcher logs for Trade events!\n");
+        // 卖单3: @ 2005 USDC (低于最低卖价 2010，会插入但不撮合)
+        (uint256 reqId3,) = sequencer.placeLimitOrder(
+            pairId, true, 2005 * 10**8, 5 * 10**6  // 0.05 WETH
+        );
+        console.log("  [3] Sell @ 2005 USDC, 0.05 WETH - insert only, no match", reqId3);
+
+        // 卖单4: @ 2015 USDC (高于最低卖价 2010，会插入但不撮合)
+        (uint256 reqId4,) = sequencer.placeLimitOrder(
+            pairId, true, 2015 * 10**8, 5 * 10**6  // 0.05 WETH
+        );
+        console.log("  [4] Sell @ 2015 USDC, 0.05 WETH - insert only, no match", reqId4);
+
+        console.log("\nPlacing BUY orders:");
+
+        // 买单1: @ 2010 USDC (等于最低卖价 2010，会被撮合)
+        (uint256 reqId5,) = sequencer.placeLimitOrder(
+            pairId, false, 2010 * 10**8, 5 * 10**6  // 0.05 WETH
+        );
+        console.log("  [5] Buy @ 2010 USDC, 0.05 WETH - WILL MATCH with ask", reqId5);
+
+        // 买单2: @ 2020 USDC (高于最低卖价 2010，会被撮合)
+        (uint256 reqId6,) = sequencer.placeLimitOrder(
+            pairId, false, 2020 * 10**8, 5 * 10**6  // 0.05 WETH
+        );
+        console.log("  [6] Buy @ 2020 USDC, 0.05 WETH - WILL MATCH with ask", reqId6);
+
+        // 买单3: @ 1995 USDC (低于最高买价 2000，会插入但不撮合)
+        (uint256 reqId7,) = sequencer.placeLimitOrder(
+            pairId, false, 1995 * 10**8, 5 * 10**6  // 0.05 WETH
+        );
+        console.log("  [7] Buy @ 1995 USDC, 0.05 WETH - insert only, no match", reqId7);
+
+        // 买单4: @ 1985 USDC (低于最高买价 2000，会插入但不撮合)
+        (uint256 reqId8,) = sequencer.placeLimitOrder(
+            pairId, false, 1985 * 10**8, 5 * 10**6  // 0.05 WETH
+        );
+        console.log("  [8] Buy @ 1985 USDC, 0.05 WETH - insert only, no match", reqId8);
+
+        console.log("\n=== Summary ===");
+        console.log("Total: 8 orders placed");
+        console.log("Expected matches: 4 orders (reqId1, reqId2, reqId5, reqId6)");
+        console.log("Expected inserts: 4 orders (reqId3, reqId4, reqId7, reqId8)");
+        console.log("\nMatcher should:");
+        console.log("  1. Calculate insertAfterPrice for each order");
+        console.log("  2. Consider that matched orders will be REMOVED from orderbook");
+        console.log("  3. Not use removed orders' price as insertAfterPrice for subsequent orders");
+        console.log("\nWatch the matcher logs!\n");
 
         vm.stopBroadcast();
     }
