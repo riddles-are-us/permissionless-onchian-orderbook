@@ -186,10 +186,9 @@ contract Sequencer {
     ) external returns (uint256 requestId, uint256 orderId) {
         require(amount > 0, "Amount must be greater than 0");
 
-        // 市价买单暂不支持（无法预先确定锁定金额）
-        require(isAsk, "Only market sell orders supported");
-
-        // 检查用户余额（市价卖单只需要基础代币）
+        // 检查用户余额
+        // 市价卖单：需要基础代币
+        // 市价买单：需要计价代币（但金额未知，由Account在执行时检查）
         require(
             account.hasSufficientBalance(msg.sender, tradingPair, isAsk, 0, amount),
             "Insufficient balance"
@@ -210,7 +209,9 @@ contract Sequencer {
             0   // orderIdToRemove不使用
         );
 
-        // 锁定用户资金（市价卖单锁定基础代币）
+        // 锁定用户资金
+        // 市价卖单：锁定基础代币
+        // 市价买单：不锁定（在执行时从可用余额扣除）
         account.lockFunds(msg.sender, tradingPair, isAsk, 0, amount, orderId);
 
         emit PlaceOrderRequested(requestId, orderId, tradingPair, msg.sender, OrderType.MarketOrder, isAsk, 0, amount, block.timestamp);

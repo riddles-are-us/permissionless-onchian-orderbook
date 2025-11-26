@@ -247,8 +247,8 @@ impl MatchingEngine {
                     total_volume: level_data.1,
                     head_order_id: level_data.2,
                     tail_order_id: level_data.3,
-                    next_price_level: level_data.4,
-                    prev_price_level: level_data.5,
+                    next_price: level_data.4,
+                    prev_price: level_data.5,
                 };
                 cache.insert(current_level_id, level.clone());
                 level
@@ -269,7 +269,7 @@ impl MatchingEngine {
             }
 
             prev_level_id = current_level_id;
-            current_level_id = level.next_price_level;
+            current_level_id = level.next_price;
         }
 
         // 应该插入到末尾

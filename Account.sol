@@ -179,8 +179,10 @@ contract Account {
             // 买单：锁定计价代币
             tokenToLock = pair.quoteToken;
             if (price == 0) {
-                // 市价买单：无法预先确定金额，需要额外处理
-                revert("Market buy orders not supported for lock");
+                // 市价买单：不预先锁定，在执行时从可用余额扣除
+                // 只需检查用户有可用余额即可（粗略检查）
+                emit FundsLocked(user, tokenToLock, 0, orderId);
+                return;
             }
             // 限价买单计算：
             // 真实价格 = price / PRICE_DECIMALS
@@ -237,6 +239,11 @@ contract Account {
         } else {
             // 买单：解锁计价代币
             tokenToUnlock = pair.quoteToken;
+            if (price == 0) {
+                // 市价买单：没有预先锁定，无需解锁
+                emit FundsUnlocked(user, tokenToUnlock, 0, orderId);
+                return;
+            }
             uint8 quoteDecimals = IERC20(pair.quoteToken).decimals();
             amountToUnlock = (price * amount * (10 ** quoteDecimals)) / (PRICE_DECIMALS * AMOUNT_DECIMALS);
         }
@@ -267,7 +274,8 @@ contract Account {
         address buyer,
         address seller,
         uint256 price,
-        uint256 amount
+        uint256 amount,
+        bool isBidMarketOrder
     ) external onlyOrderBook {
         require(amount > 0, "Amount must be greater than 0");
         require(price > 0, "Price must be greater than 0");
@@ -282,12 +290,22 @@ contract Account {
         uint256 baseAmount = (amount * (10 ** baseDecimals)) / AMOUNT_DECIMALS;
         uint256 quoteAmount = (price * amount * (10 ** quoteDecimals)) / (PRICE_DECIMALS * AMOUNT_DECIMALS);
 
-        // 买方：扣除锁定的计价代币，增加基础代币
-        require(
-            balances[buyer][pair.quoteToken].locked >= quoteAmount,
-            "Buyer insufficient locked quote token"
-        );
-        balances[buyer][pair.quoteToken].locked -= quoteAmount;
+        // 买方：扣除计价代币，增加基础代币
+        if (isBidMarketOrder) {
+            // 市价买单：从可用余额扣除（未预先锁定）
+            require(
+                balances[buyer][pair.quoteToken].available >= quoteAmount,
+                "Buyer insufficient available quote token"
+            );
+            balances[buyer][pair.quoteToken].available -= quoteAmount;
+        } else {
+            // 限价买单：从锁定余额扣除（已预先锁定）
+            require(
+                balances[buyer][pair.quoteToken].locked >= quoteAmount,
+                "Buyer insufficient locked quote token"
+            );
+            balances[buyer][pair.quoteToken].locked -= quoteAmount;
+        }
         balances[buyer][pair.baseToken].available += baseAmount;
 
         // 卖方：扣除锁定的基础代币，增加计价代币
@@ -367,8 +385,8 @@ contract Account {
         } else {
             // 买单：需要计价代币
             if (price == 0) {
-                // 市价单暂不支持
-                return false;
+                // 市价买单：无法预先计算所需金额，只检查用户是否有可用余额
+                return balances[user][pair.quoteToken].available > 0;
             }
             uint8 quoteDecimals = IERC20(pair.quoteToken).decimals();
             uint256 requiredQuote = (price * amount * (10 ** quoteDecimals)) / (PRICE_DECIMALS * AMOUNT_DECIMALS);

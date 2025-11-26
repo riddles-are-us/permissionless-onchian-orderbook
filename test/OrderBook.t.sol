@@ -211,13 +211,13 @@ contract OrderBookTest is Test {
         // 设置插入位置：
         // 买单按价格从高到低：2000(头) -> 1950 -> 1900
         insertAfterPriceLevels[0] = 0;  // 2000插入到头部
-        insertAfterPriceLevels[1] = 1;  // 1950插入到priceLevel 1之后
-        insertAfterPriceLevels[2] = 2;  // 1900插入到priceLevel 2之后
+        insertAfterPriceLevels[1] = 2000 * 10**8;  // 1950插入到价格2000之后
+        insertAfterPriceLevels[2] = 1950 * 10**8;  // 1900插入到价格1950之后
 
         // 卖单按价格从低到高：2100(头) -> 2150 -> 2200
         insertAfterPriceLevels[3] = 0;  // 2100插入到头部
-        insertAfterPriceLevels[4] = 4;  // 2150插入到priceLevel 4之后
-        insertAfterPriceLevels[5] = 5;  // 2200插入到priceLevel 5之后
+        insertAfterPriceLevels[4] = 2100 * 10**8;  // 2150插入到价格2100之后
+        insertAfterPriceLevels[5] = 2150 * 10**8;  // 2200插入到价格2150之后
 
         console.log("\nBatch inserting 6 orders...");
         uint256 processedCount = orderBook.batchProcessRequests(
@@ -251,10 +251,10 @@ contract OrderBookTest is Test {
         uint256 currentPriceLevel = bidHead;
         uint256 bidLevels = 0;
         while (currentPriceLevel != 0) {
-            (uint256 price, uint256 totalVolume, , , uint256 nextPriceLevel, ) = orderBook.priceLevels(currentPriceLevel);
-            console.log("  Price (USDC):", price / 10**6);
-            console.log("  Volume (WETH):", totalVolume / 1 ether);
-            currentPriceLevel = nextPriceLevel;
+            OrderBook.PriceLevel memory level = orderBook.getPriceLevel(currentPriceLevel, false);
+            console.log("  Price (USDC):", level.price / 10**6);
+            console.log("  Volume (WETH):", level.totalVolume / 1 ether);
+            currentPriceLevel = level.nextPrice;
             bidLevels++;
         }
 
@@ -263,10 +263,10 @@ contract OrderBookTest is Test {
         currentPriceLevel = askHead;
         uint256 askLevels = 0;
         while (currentPriceLevel != 0) {
-            (uint256 price, uint256 totalVolume, , , uint256 nextPriceLevel, ) = orderBook.priceLevels(currentPriceLevel);
-            console.log("  Price (USDC):", price / 10**6);
-            console.log("  Volume (WETH):", totalVolume / 1 ether);
-            currentPriceLevel = nextPriceLevel;
+            OrderBook.PriceLevel memory level = orderBook.getPriceLevel(currentPriceLevel, true);
+            console.log("  Price (USDC):", level.price / 10**6);
+            console.log("  Volume (WETH):", level.totalVolume / 1 ether);
+            currentPriceLevel = level.nextPrice;
             askLevels++;
         }
 
@@ -387,12 +387,12 @@ contract OrderBookTest is Test {
 
         uint256[] memory insertAfterPriceLevels = new uint256[](6);
         uint256[] memory insertAfterOrders = new uint256[](6);
-        insertAfterPriceLevels[0] = 0;
-        insertAfterPriceLevels[1] = 1;
-        insertAfterPriceLevels[2] = 2;
-        insertAfterPriceLevels[3] = 0;
-        insertAfterPriceLevels[4] = 4;
-        insertAfterPriceLevels[5] = 5;
+        insertAfterPriceLevels[0] = 0;                 // 2000插入到头部
+        insertAfterPriceLevels[1] = 2000 * 10**8;     // 1950插入到价格2000之后
+        insertAfterPriceLevels[2] = 1950 * 10**8;     // 1900插入到价格1950之后
+        insertAfterPriceLevels[3] = 0;                 // 2100插入到头部
+        insertAfterPriceLevels[4] = 2100 * 10**8;     // 2150插入到价格2100之后
+        insertAfterPriceLevels[5] = 2150 * 10**8;     // 2200插入到价格2150之后
 
         console.log("\nBatch inserting 6 orders...");
         uint256 processedCount = orderBook.batchProcessRequests(

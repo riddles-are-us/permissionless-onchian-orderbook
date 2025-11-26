@@ -38,8 +38,8 @@ pub struct PriceLevel {
     pub total_volume: U256,
     pub head_order_id: U256,
     pub tail_order_id: U256,
-    pub next_price_level: U256,
-    pub prev_price_level: U256,
+    pub next_price: U256,
+    pub prev_price: U256,
 }
 
 /// 订单

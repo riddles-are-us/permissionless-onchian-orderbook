@@ -13,39 +13,39 @@ contract OrderBook {
         uint256 amount;
         uint256 filledAmount;
         bool isMarketOrder;  // true表示市价单，false表示限价单
-        uint256 priceLevel;  // 该订单所属的价格层级ID（限价单使用）
+        uint256 priceLevel;  // 该订单所属的价格（限价单使用，直接存储price值）
         uint256 nextOrderId;  // 同一价格层级下的下一个订单或市价单列表中的下一个订单
         uint256 prevOrderId;  // 同一价格层级下的上一个订单或市价单列表中的上一个订单
     }
 
     // 价格层级结构 - 每个价格层级包含该价格下的所有订单
+    // 注意：mapping的key就是price，所以这里的price字段是冗余的，但为了清晰保留
     struct PriceLevel {
         uint256 price;
         uint256 totalVolume;  // 该价格层级的总挂单量
         uint256 headOrderId;  // 该价格层级的第一个订单
         uint256 tailOrderId;  // 该价格层级的最后一个订单
-        uint256 nextPriceLevel;  // 下一个价格层级
-        uint256 prevPriceLevel;  // 上一个价格层级
+        uint256 nextPrice;  // 下一个价格（不是ID，直接是price值）
+        uint256 prevPrice;  // 上一个价格（不是ID，直接是price值）
     }
 
     // 交易对的订单簿结构
     struct OrderBookData {
-        uint256 askHead;  // 限价Ask列表的头部（最低卖价）
-        uint256 askTail;  // 限价Ask列表的尾部（最高卖价）
-        uint256 bidHead;  // 限价Bid列表的头部（最高买价）
-        uint256 bidTail;  // 限价Bid列表的尾部（最低买价）
-        uint256 marketAskHead;  // 市价Ask列表的头部
-        uint256 marketAskTail;  // 市价Ask列表的尾部
-        uint256 marketBidHead;  // 市价Bid列表的头部
-        uint256 marketBidTail;  // 市价Bid列表的尾部
+        uint256 askHead;  // 限价Ask列表头部的价格（最低卖价）
+        uint256 askTail;  // 限价Ask列表尾部的价格（最高卖价）
+        uint256 bidHead;  // 限价Bid列表头部的价格（最高买价）
+        uint256 bidTail;  // 限价Bid列表尾部的价格（最低买价）
+        uint256 marketAskHead;  // 市价Ask列表的头部订单ID
+        uint256 marketAskTail;  // 市价Ask列表的尾部订单ID
+        uint256 marketBidHead;  // 市价Bid列表的头部订单ID
+        uint256 marketBidTail;  // 市价Bid列表的尾部订单ID
     }
 
     // 存储
     mapping(bytes32 => OrderBookData) public orderBooks;  // tradingPair => OrderBookData
-    mapping(uint256 => PriceLevel) public priceLevels;
+    mapping(uint256 => PriceLevel) public priceLevels;  // (price | side_flag) => PriceLevel
+    // 使用复合key: Ask订单使用price本身, Bid订单使用 price | (1 << 255)
     mapping(uint256 => Order) public orders;
-
-    uint256 public nextPriceLevelId = 1;
 
     // Sequencer合约引用
     ISequencer public sequencer;
@@ -64,8 +64,8 @@ contract OrderBook {
     event OrderRemoved(bytes32 indexed tradingPair, uint256 indexed orderId);
     event MarketOrderInserted(bytes32 indexed tradingPair, uint256 indexed orderId, bool isAsk, uint256 amount);
     event MarketOrderRemoved(bytes32 indexed tradingPair, uint256 indexed orderId);
-    event PriceLevelCreated(bytes32 indexed tradingPair, uint256 indexed priceLevelId, uint256 price, bool isAsk);
-    event PriceLevelRemoved(bytes32 indexed tradingPair, uint256 indexed priceLevelId);
+    event PriceLevelCreated(bytes32 indexed tradingPair, uint256 indexed price, bool isAsk);
+    event PriceLevelRemoved(bytes32 indexed tradingPair, uint256 indexed price);
     event SequencerSet(address indexed sequencer);
     event AccountSet(address indexed account);
     event Trade(
@@ -102,14 +102,37 @@ contract OrderBook {
     }
 
     /**
+     * @dev 生成价格层级的composite key (编码价格和side)
+     * Ask订单使用价格本身, Bid订单使用price | (1 << 255)
+     */
+    function _getPriceLevelKey(uint256 price, bool isAsk) internal pure returns (uint256) {
+        if (isAsk) {
+            return price;
+        } else {
+            return price | (uint256(1) << 255);  // Set the highest bit for bid orders
+        }
+    }
+
+    /**
+     * @notice 获取价格层级信息（public接口，自动处理composite key）
+     * @param price 纯价格值
+     * @param isAsk 是否为ask侧
+     * @return PriceLevel结构
+     */
+    function getPriceLevel(uint256 price, bool isAsk) public view returns (PriceLevel memory) {
+        uint256 key = _getPriceLevelKey(price, isAsk);
+        return priceLevels[key];
+    }
+
+    /**
      * @notice 插入限价单到订单簿
      * @param sequencerOrderId Sequencer中的订单ID
-     * @param insertAfterPriceLevel 要插入的价格层级的前一个价格层级ID（0表示插入到头部）
+     * @param insertAfterPrice 要插入位置的前一个价格层级的价格值（0表示插入到头部）
      * @param insertAfterOrder 在该价格层级内，要插入的订单的前一个订单ID（0表示插入到该价格层级头部）
      */
     function insertOrder(
         uint256 sequencerOrderId,
-        uint256 insertAfterPriceLevel,
+        uint256 insertAfterPrice,
         uint256 insertAfterOrder
     ) external {
         // 验证该订单是Sequencer队列的头部
@@ -135,7 +158,7 @@ contract OrderBook {
             tradingPair,
             isAsk,
             price,
-            insertAfterPriceLevel
+            insertAfterPrice
         );
 
         // 创建新订单，使用Sequencer的订单ID
@@ -151,7 +174,7 @@ contract OrderBook {
         orderTradingPairs[sequencerOrderId] = tradingPair;
 
         // 将订单插入到价格层级的订单列表中
-        _insertOrderIntoPriceLevel(priceLevelId, sequencerOrderId, insertAfterOrder);
+        _insertOrderIntoPriceLevel(priceLevelId, sequencerOrderId, insertAfterOrder, isAsk);
 
         // 从Sequencer中处理该请求
         sequencer.processRequest(sequencerOrderId);
@@ -214,11 +237,14 @@ contract OrderBook {
         } else {
             // 限价单
             uint256 priceLevelId = order.priceLevel;
-            PriceLevel storage priceLevel = priceLevels[priceLevelId];
 
             // 判断是ask还是bid
             OrderBookData storage book = orderBooks[tradingPair];
             isAsk = _isAskOrder(book, priceLevelId);
+
+            // 使用composite key访问priceLevel
+            uint256 levelKey = _getPriceLevelKey(priceLevelId, isAsk);
+            PriceLevel storage priceLevel = priceLevels[levelKey];
 
             uint256 remainingAmount = order.amount - order.filledAmount;
             if (remainingAmount > 0) {
@@ -232,7 +258,7 @@ contract OrderBook {
                 );
             }
 
-            _removeOrderFromPriceLevel(priceLevelId, orderIdToRemove);
+            _removeOrderFromPriceLevel(priceLevelId, orderIdToRemove, isAsk);
 
             if (priceLevel.headOrderId == EMPTY) {
                 _removePriceLevel(tradingPair, priceLevelId, isAsk);
@@ -254,19 +280,19 @@ contract OrderBook {
     /**
      * @notice 批量处理Sequencer队列中的请求
      * @param requestIds 要处理的请求ID数组（必须按队列顺序）
-     * @param insertAfterPriceLevels 下单请求的价格层级插入位置数组
+     * @param insertAfterPrices 下单请求的价格插入位置数组（前一个价格层级的价格值，0表示头部）
      * @param insertAfterOrders 下单请求的订单插入位置数组
      * @return processedCount 实际处理的请求数量
      */
     function batchProcessRequests(
         uint256[] calldata requestIds,
-        uint256[] calldata insertAfterPriceLevels,
+        uint256[] calldata insertAfterPrices,
         uint256[] calldata insertAfterOrders
     ) external returns (uint256 processedCount) {
         require(requestIds.length > 0, "Empty request array");
         require(requestIds.length <= 100, "Batch size too large");  // Gas控制：限制批量大小
         require(
-            requestIds.length == insertAfterPriceLevels.length &&
+            requestIds.length == insertAfterPrices.length &&
             requestIds.length == insertAfterOrders.length,
             "Array length mismatch"
         );
@@ -295,7 +321,7 @@ contract OrderBook {
             // 根据请求类型处理
             if (uint8(requestType) == 0) {
                 // PlaceOrder请求
-                _batchProcessPlaceOrder(requestId, insertAfterPriceLevels[i], insertAfterOrders[i]);
+                _batchProcessPlaceOrder(requestId, insertAfterPrices[i], insertAfterOrders[i]);
             } else if (uint8(requestType) == 1) {
                 // RemoveOrder请求
                 _batchProcessRemoveOrder(requestId);
@@ -314,7 +340,7 @@ contract OrderBook {
      */
     function _batchProcessPlaceOrder(
         uint256 requestId,
-        uint256 insertAfterPriceLevel,
+        uint256 insertAfterPrice,
         uint256 insertAfterOrder
     ) internal {
         // 获取请求信息
@@ -334,7 +360,7 @@ contract OrderBook {
                 tradingPair,
                 isAsk,
                 price,
-                insertAfterPriceLevel
+                insertAfterPrice
             );
 
             Order storage order = orders[requestId];
@@ -346,7 +372,7 @@ contract OrderBook {
             order.priceLevel = priceLevelId;
 
             orderTradingPairs[requestId] = tradingPair;
-            _insertOrderIntoPriceLevel(priceLevelId, requestId, insertAfterOrder);
+            _insertOrderIntoPriceLevel(priceLevelId, requestId, insertAfterOrder, isAsk);
 
             sequencer.processRequest(requestId);
             emit OrderInserted(tradingPair, requestId, isAsk, price, amount);
@@ -412,10 +438,13 @@ contract OrderBook {
             _removeMarketOrderFromList(tradingPair, orderIdToRemove, true);
         } else {
             uint256 priceLevelId = order.priceLevel;
-            PriceLevel storage priceLevel = priceLevels[priceLevelId];
 
             OrderBookData storage book = orderBooks[tradingPair];
             bool isAsk = _isAskOrder(book, priceLevelId);
+
+            // 使用composite key访问priceLevel
+            uint256 levelKey = _getPriceLevelKey(priceLevelId, isAsk);
+            PriceLevel storage priceLevel = priceLevels[levelKey];
 
             uint256 remainingAmount = order.amount - order.filledAmount;
             if (remainingAmount > 0) {
@@ -429,7 +458,7 @@ contract OrderBook {
                 );
             }
 
-            _removeOrderFromPriceLevel(priceLevelId, orderIdToRemove);
+            _removeOrderFromPriceLevel(priceLevelId, orderIdToRemove, isAsk);
 
             if (priceLevel.headOrderId == EMPTY) {
                 _removePriceLevel(tradingPair, priceLevelId, isAsk);
@@ -453,122 +482,133 @@ contract OrderBook {
             if (currentLevel == priceLevelId) {
                 return true;
             }
-            currentLevel = priceLevels[currentLevel].nextPriceLevel;
+            // 使用ask侧的composite key访问priceLevels
+            uint256 levelKey = _getPriceLevelKey(currentLevel, true);
+            currentLevel = priceLevels[levelKey].nextPrice;
         }
         return false;
     }
 
     /**
      * @dev 查找或创建价格层级
+     * @param insertAfterPrice 前一个价格层级的价格值（0表示插入到头部）
+     * @return price 返回价格值（现在price本身就是key）
      */
     function _findOrCreatePriceLevel(
         bytes32 tradingPair,
         bool isAsk,
         uint256 price,
-        uint256 insertAfterPriceLevel
-    ) internal returns (uint256 priceLevelId) {
-        OrderBookData storage book = orderBooks[tradingPair];
+        uint256 insertAfterPrice
+    ) internal returns (uint256) {
+        // 生成composite key来访问priceLevels映射
+        uint256 levelKey = _getPriceLevelKey(price, isAsk);
 
-        // 检查是否已存在该价格层级
-        uint256 currentPriceLevelId = isAsk ? book.askHead : book.bidHead;
-        while (currentPriceLevelId != EMPTY) {
-            if (priceLevels[currentPriceLevelId].price == price) {
-                return currentPriceLevelId;
-            }
-            currentPriceLevelId = priceLevels[currentPriceLevelId].nextPriceLevel;
+        // 直接检查该price是否已存在
+        if (priceLevels[levelKey].price != 0) {
+            // 价格层级已存在
+            return price;  // 返回纯价格(不含side标志)
         }
 
-        // 创建新的价格层级
-        priceLevelId = nextPriceLevelId++;
-        PriceLevel storage newPriceLevel = priceLevels[priceLevelId];
-        newPriceLevel.price = price;
+        // 创建新的价格层级，使用composite key存储
+        PriceLevel storage newPriceLevel = priceLevels[levelKey];
+        newPriceLevel.price = price;  // 存储纯价格
         newPriceLevel.totalVolume = 0;
         newPriceLevel.headOrderId = EMPTY;
         newPriceLevel.tailOrderId = EMPTY;
 
         // 插入价格层级到列表中
-        _insertPriceLevelIntoList(tradingPair, isAsk, priceLevelId, insertAfterPriceLevel);
+        _insertPriceLevelIntoList(tradingPair, isAsk, price, insertAfterPrice);
 
-        emit PriceLevelCreated(tradingPair, priceLevelId, price, isAsk);
+        emit PriceLevelCreated(tradingPair, price, isAsk);
 
-        return priceLevelId;
+        return price;  // 返回纯价格(不含side标志)
     }
 
     /**
      * @dev 将价格层级插入到列表中，并验证排序
+     * @param insertAfterPrice 前一个价格层级的价格值（0表示插入到头部）
      */
     function _insertPriceLevelIntoList(
         bytes32 tradingPair,
         bool isAsk,
-        uint256 priceLevelId,
-        uint256 insertAfterPriceLevel
+        uint256 price,  // 纯价格(不含side标志)
+        uint256 insertAfterPrice  // 纯价格(不含side标志)
     ) internal {
         OrderBookData storage book = orderBooks[tradingPair];
-        PriceLevel storage newPriceLevel = priceLevels[priceLevelId];
 
-        if (insertAfterPriceLevel == EMPTY) {
+        // 使用composite key访问priceLevels
+        uint256 levelKey = _getPriceLevelKey(price, isAsk);
+        PriceLevel storage newPriceLevel = priceLevels[levelKey];
+
+        if (insertAfterPrice == EMPTY) {
             // 插入到头部
             uint256 oldHead = isAsk ? book.askHead : book.bidHead;
 
             if (oldHead != EMPTY) {
+                uint256 oldHeadKey = _getPriceLevelKey(oldHead, isAsk);
+
                 // 验证排序：新价格层级应该小于等于原头部（ask）或大于等于原头部（bid）
                 if (isAsk) {
-                    require(newPriceLevel.price <= priceLevels[oldHead].price, "Invalid insertion position: price too high for ask head");
+                    require(newPriceLevel.price <= priceLevels[oldHeadKey].price, "Invalid insertion position: price too high for ask head");
                 } else {
-                    require(newPriceLevel.price >= priceLevels[oldHead].price, "Invalid insertion position: price too low for bid head");
+                    require(newPriceLevel.price >= priceLevels[oldHeadKey].price, "Invalid insertion position: price too low for bid head");
                 }
 
-                priceLevels[oldHead].prevPriceLevel = priceLevelId;
-                newPriceLevel.nextPriceLevel = oldHead;
+                priceLevels[oldHeadKey].prevPrice = price;
+                newPriceLevel.nextPrice = oldHead;
             } else {
                 // 列表为空，同时设置tail
                 if (isAsk) {
-                    book.askTail = priceLevelId;
+                    book.askTail = price;
                 } else {
-                    book.bidTail = priceLevelId;
+                    book.bidTail = price;
                 }
             }
 
             if (isAsk) {
-                book.askHead = priceLevelId;
+                book.askHead = price;
             } else {
-                book.bidHead = priceLevelId;
+                book.bidHead = price;
             }
         } else {
-            // 插入到指定节点后面
-            PriceLevel storage prevPriceLevel = priceLevels[insertAfterPriceLevel];
-            require(prevPriceLevel.price != 0, "Previous price level does not exist");
+            // 使用composite key检查insertAfterPrice是否存在
+            uint256 insertAfterKey = _getPriceLevelKey(insertAfterPrice, isAsk);
+            require(priceLevels[insertAfterKey].price != 0, "Previous price level does not exist");
 
-            uint256 nextPriceLevelId = prevPriceLevel.nextPriceLevel;
+            PriceLevel storage prevPriceLevel = priceLevels[insertAfterKey];
+            uint256 nextPrice = prevPriceLevel.nextPrice;
 
             // 验证排序
             if (isAsk) {
                 // Ask: 价格递增
                 require(newPriceLevel.price >= prevPriceLevel.price, "Invalid insertion position: price lower than previous");
-                if (nextPriceLevelId != EMPTY) {
-                    require(newPriceLevel.price <= priceLevels[nextPriceLevelId].price, "Invalid insertion position: price higher than next");
+                if (nextPrice != EMPTY) {
+                    uint256 nextPriceKey = _getPriceLevelKey(nextPrice, isAsk);
+                    require(newPriceLevel.price <= priceLevels[nextPriceKey].price, "Invalid insertion position: price higher than next");
                 }
             } else {
                 // Bid: 价格递减
                 require(newPriceLevel.price <= prevPriceLevel.price, "Invalid insertion position: price higher than previous");
-                if (nextPriceLevelId != EMPTY) {
-                    require(newPriceLevel.price >= priceLevels[nextPriceLevelId].price, "Invalid insertion position: price lower than next");
+                if (nextPrice != EMPTY) {
+                    uint256 nextPriceKey = _getPriceLevelKey(nextPrice, isAsk);
+                    require(newPriceLevel.price >= priceLevels[nextPriceKey].price, "Invalid insertion position: price lower than next");
                 }
             }
 
             // 插入节点
-            newPriceLevel.prevPriceLevel = insertAfterPriceLevel;
-            newPriceLevel.nextPriceLevel = nextPriceLevelId;
-            prevPriceLevel.nextPriceLevel = priceLevelId;
+            newPriceLevel.prevPrice = insertAfterPrice;
+            newPriceLevel.nextPrice = nextPrice;
+            prevPriceLevel.nextPrice = price;
 
-            if (nextPriceLevelId != EMPTY) {
-                priceLevels[nextPriceLevelId].prevPriceLevel = priceLevelId;
+            if (nextPrice != EMPTY) {
+                uint256 nextPriceKey = _getPriceLevelKey(nextPrice, isAsk);
+                priceLevels[nextPriceKey].prevPrice = price;
             } else {
                 // 插入到尾部
                 if (isAsk) {
-                    book.askTail = priceLevelId;
+                    book.askTail = price;
                 } else {
-                    book.bidTail = priceLevelId;
+                    book.bidTail = price;
                 }
             }
         }
@@ -580,9 +620,11 @@ contract OrderBook {
     function _insertOrderIntoPriceLevel(
         uint256 priceLevelId,
         uint256 orderId,
-        uint256 insertAfterOrder
+        uint256 insertAfterOrder,
+        bool isAsk
     ) internal {
-        PriceLevel storage priceLevel = priceLevels[priceLevelId];
+        uint256 levelKey = _getPriceLevelKey(priceLevelId, isAsk);
+        PriceLevel storage priceLevel = priceLevels[levelKey];
         Order storage order = orders[orderId];
 
         if (insertAfterOrder == EMPTY) {
@@ -627,9 +669,11 @@ contract OrderBook {
      */
     function _removeOrderFromPriceLevel(
         uint256 priceLevelId,
-        uint256 orderId
+        uint256 orderId,
+        bool isAsk
     ) internal {
-        PriceLevel storage priceLevel = priceLevels[priceLevelId];
+        uint256 levelKey = _getPriceLevelKey(priceLevelId, isAsk);
+        PriceLevel storage priceLevel = priceLevels[levelKey];
         Order storage order = orders[orderId];
 
         uint256 prevOrderId = order.prevOrderId;
@@ -662,13 +706,15 @@ contract OrderBook {
         bool isAsk
     ) internal {
         OrderBookData storage book = orderBooks[tradingPair];
-        PriceLevel storage priceLevel = priceLevels[priceLevelId];
+        uint256 levelKey = _getPriceLevelKey(priceLevelId, isAsk);
+        PriceLevel storage priceLevel = priceLevels[levelKey];
 
-        uint256 prevPriceLevelId = priceLevel.prevPriceLevel;
-        uint256 nextPriceLevelId = priceLevel.nextPriceLevel;
+        uint256 prevPriceLevelId = priceLevel.prevPrice;
+        uint256 nextPriceLevelId = priceLevel.nextPrice;
 
         if (prevPriceLevelId != EMPTY) {
-            priceLevels[prevPriceLevelId].nextPriceLevel = nextPriceLevelId;
+            uint256 prevKey = _getPriceLevelKey(prevPriceLevelId, isAsk);
+            priceLevels[prevKey].nextPrice = nextPriceLevelId;
         } else {
             // 这是头节点
             if (isAsk) {
@@ -679,7 +725,8 @@ contract OrderBook {
         }
 
         if (nextPriceLevelId != EMPTY) {
-            priceLevels[nextPriceLevelId].prevPriceLevel = prevPriceLevelId;
+            uint256 nextKey = _getPriceLevelKey(nextPriceLevelId, isAsk);
+            priceLevels[nextKey].prevPrice = prevPriceLevelId;
         } else {
             // 这是尾节点
             if (isAsk) {
@@ -690,7 +737,7 @@ contract OrderBook {
         }
 
         // 删除价格层级
-        delete priceLevels[priceLevelId];
+        delete priceLevels[levelKey];
 
         emit PriceLevelRemoved(tradingPair, priceLevelId);
     }
@@ -712,10 +759,11 @@ contract OrderBook {
         uint256 currentPriceLevelId = isAsk ? book.askHead : book.bidHead;
 
         for (uint256 i = 0; i < depth && currentPriceLevelId != EMPTY; i++) {
-            PriceLevel storage priceLevel = priceLevels[currentPriceLevelId];
+            uint256 levelKey = _getPriceLevelKey(currentPriceLevelId, isAsk);
+            PriceLevel storage priceLevel = priceLevels[levelKey];
             prices[i] = priceLevel.price;
             volumes[i] = priceLevel.totalVolume;
-            currentPriceLevelId = priceLevel.nextPriceLevel;
+            currentPriceLevelId = priceLevel.nextPrice;
         }
 
         return (prices, volumes);
@@ -732,7 +780,8 @@ contract OrderBook {
             return 0;
         }
 
-        return priceLevels[headPriceLevelId].price;
+        uint256 levelKey = _getPriceLevelKey(headPriceLevelId, isAsk);
+        return priceLevels[levelKey].price;
     }
 
     // ============ 市价单相关函数 ============
@@ -936,8 +985,10 @@ contract OrderBook {
                 break;
             }
 
-            PriceLevel storage bidPriceLevel = priceLevels[bidPriceLevelId];
-            PriceLevel storage askPriceLevel = priceLevels[askPriceLevelId];
+            uint256 bidLevelKey = _getPriceLevelKey(bidPriceLevelId, false);
+            uint256 askLevelKey = _getPriceLevelKey(askPriceLevelId, true);
+            PriceLevel storage bidPriceLevel = priceLevels[bidLevelKey];
+            PriceLevel storage askPriceLevel = priceLevels[askLevelKey];
 
             // 检查是否可以成交：买价 >= 卖价
             if (bidPriceLevel.price < askPriceLevel.price) {
@@ -1007,11 +1058,13 @@ contract OrderBook {
 
         // 更新价格层级的总挂单量
         if (!bidOrder.isMarketOrder) {
-            PriceLevel storage bidPriceLevel = priceLevels[bidOrder.priceLevel];
+            uint256 bidLevelKey = _getPriceLevelKey(bidOrder.priceLevel, false);
+            PriceLevel storage bidPriceLevel = priceLevels[bidLevelKey];
             bidPriceLevel.totalVolume -= tradeAmount;
         }
         if (!askOrder.isMarketOrder) {
-            PriceLevel storage askPriceLevel = priceLevels[askOrder.priceLevel];
+            uint256 askLevelKey = _getPriceLevelKey(askOrder.priceLevel, true);
+            PriceLevel storage askPriceLevel = priceLevels[askLevelKey];
             askPriceLevel.totalVolume -= tradeAmount;
         }
 
@@ -1021,7 +1074,8 @@ contract OrderBook {
             bidOrder.trader,  // 买方
             askOrder.trader,  // 卖方
             tradePrice,
-            tradeAmount
+            tradeAmount,
+            bidOrder.isMarketOrder  // 是否为市价买单
         );
 
         // 触发成交事件
@@ -1067,10 +1121,11 @@ contract OrderBook {
         } else {
             // 限价单：从价格层级中移除
             uint256 priceLevelId = order.priceLevel;
-            _removeOrderFromPriceLevel(priceLevelId, orderId);
+            _removeOrderFromPriceLevel(priceLevelId, orderId, isAsk);
 
             // 如果价格层级没有订单了，删除该价格层级
-            PriceLevel storage priceLevel = priceLevels[priceLevelId];
+            uint256 levelKey = _getPriceLevelKey(priceLevelId, isAsk);
+            PriceLevel storage priceLevel = priceLevels[levelKey];
             if (priceLevel.headOrderId == EMPTY) {
                 _removePriceLevel(tradingPair, priceLevelId, isAsk);
             }
@@ -1110,7 +1165,8 @@ contract OrderBook {
             // 优先撮合市价买单（与最优卖价）
             if (book.marketBidHead != EMPTY && book.askHead != EMPTY) {
                 uint256 marketBidOrderId = book.marketBidHead;
-                PriceLevel storage askPriceLevel = priceLevels[book.askHead];
+                uint256 askLevelKey = _getPriceLevelKey(book.askHead, true);
+                PriceLevel storage askPriceLevel = priceLevels[askLevelKey];
                 uint256 askOrderId = askPriceLevel.headOrderId;
 
                 if (askOrderId != EMPTY) {
@@ -1131,7 +1187,8 @@ contract OrderBook {
             // 撮合市价卖单（与最优买价）
             if (book.marketAskHead != EMPTY && book.bidHead != EMPTY) {
                 uint256 marketAskOrderId = book.marketAskHead;
-                PriceLevel storage bidPriceLevel = priceLevels[book.bidHead];
+                uint256 bidLevelKey = _getPriceLevelKey(book.bidHead, false);
+                PriceLevel storage bidPriceLevel = priceLevels[bidLevelKey];
                 uint256 bidOrderId = bidPriceLevel.headOrderId;
 
                 if (bidOrderId != EMPTY) {

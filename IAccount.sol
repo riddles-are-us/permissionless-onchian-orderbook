@@ -29,7 +29,8 @@ interface IAccount {
         address buyer,
         address seller,
         uint256 price,
-        uint256 amount
+        uint256 amount,
+        bool isBidMarketOrder
     ) external;
 
     function hasSufficientBalance(

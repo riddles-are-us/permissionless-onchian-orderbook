@@ -101,7 +101,7 @@ contract GasTest is Test {
         for (uint256 j = 0; j < batchSize; j++) {
             sequencer.placeLimitOrder(pairId, false, basePrice, 1 * 10**8);
             requestIds[j] = firstRequestId + j;
-            insertAfterPriceLevels[j] = j == 0 ? 0 : 2; // 第一个插入新层级ID=2
+            insertAfterPriceLevels[j] = j == 0 ? 0 : basePrice; // 第一个插入头部，后续插入到basePrice之后
             insertAfterOrders[j] = j == 0 ? 0 : (firstRequestId + j - 1); // 插入到前一个订单后
         }
         vm.stopPrank();
@@ -130,47 +130,51 @@ contract GasTest is Test {
 
         // 批量处理买单 - 修正插入位置
         // 对于 bid 订单，价格从高到低 (2000, 1990, 1980, 1970, 1960)
-        // 第一个订单插入头部创建 priceLevel 1，后续订单应该插入到前一个 priceLevel 之后
+        // 第一个订单插入头部，后续订单应该插入到前一个价格之后
         uint256[] memory buyRequestIds = new uint256[](5);
         uint256[] memory insertAfterPriceLevels = new uint256[](5);
         uint256[] memory insertAfterOrders = new uint256[](5);
         for (uint256 i = 0; i < 5; i++) {
             buyRequestIds[i] = i + 1;
-            // 第一个插入头部，后续插入到前一个 priceLevel 之后
-            insertAfterPriceLevels[i] = (i == 0) ? 0 : (i);  // priceLevel IDs: 1, 2, 3, 4, 5
+            uint256 price = (2000 - i * 10) * 10**8;
+            // 第一个插入头部，后续插入到前一个价格之后
+            insertAfterPriceLevels[i] = (i == 0) ? 0 : ((2000 - (i-1) * 10) * 10**8);
             insertAfterOrders[i] = 0;
         }
         vm.prank(matcher);
         orderbook.batchProcessRequests(buyRequestIds, insertAfterPriceLevels, insertAfterOrders);
 
-        // 准备卖单（会触发撮合）
+        // 准备卖单（先不触发撮合）- 价格高于买单
         vm.startPrank(trader2);
         for (uint256 i = 0; i < 5; i++) {
-            uint256 price = (1990 + i * 10) * 10**8;
+            uint256 price = (2010 + i * 10) * 10**8;
             sequencer.placeLimitOrder(pairId, true, price, 1 * 10**8);
         }
         vm.stopPrank();
 
-        // 批量处理卖单 - 修正插入位置
-        // 对于 ask 订单，价格从低到高 (1990, 2000, 2010, 2020, 2030)
-        // 第一个订单插入头部创建 priceLevel 6，后续订单应该插入到前一个 priceLevel 之后
+        // 批量处理卖单
+        // 对于 ask 订单，价格从低到高 (2010, 2020, 2030, 2040, 2050)
+        // 第一个插入头部，后续插入到前一个价格之后
         uint256[] memory sellRequestIds = new uint256[](5);
         for (uint256 i = 0; i < 5; i++) {
             sellRequestIds[i] = 6 + i;
-            // 第一个插入头部，后续插入到前一个 priceLevel 之后
-            insertAfterPriceLevels[i] = (i == 0) ? 0 : (5 + i);  // priceLevel IDs: 6, 7, 8, 9, 10
+            insertAfterPriceLevels[i] = (i == 0) ? 0 : ((2010 + (i-1) * 10) * 10**8);
             insertAfterOrders[i] = 0;
         }
+        vm.prank(matcher);
+        orderbook.batchProcessRequests(sellRequestIds, insertAfterPriceLevels, insertAfterOrders);
 
-        // 测试撮合
+        // 测试撮合 - 手动触发撮合
         vm.prank(matcher);
         uint256 gasBefore = gasleft();
-        orderbook.batchProcessRequests(sellRequestIds, insertAfterPriceLevels, insertAfterOrders);
+        uint256 matchCount = orderbook.matchOrders(pairId, 10);
         uint256 gasUsed = gasBefore - gasleft();
 
-        console.log("Matching 5 orders:");
+        console.log("Matching trades:", matchCount);
         console.log("  Total gas:", gasUsed);
-        console.log("  Gas per order:", gasUsed / 5);
+        if (matchCount > 0) {
+            console.log("  Gas per trade:", gasUsed / matchCount);
+        }
     }
 
     /// @notice 测试不同撮合深度的 gas 消耗
@@ -194,15 +198,14 @@ contract GasTest is Test {
             vm.stopPrank();
 
             // 批量处理买单 - 修正插入位置
-            // Bid 订单价格递减，每个新订单插入到前一个 priceLevel 之后
+            // Bid 订单价格递减，每个新订单插入到前一个价格之后
             uint256[] memory buyRequestIds = new uint256[](depth);
             uint256[] memory insertAfterPriceLevels = new uint256[](depth);
             uint256[] memory insertAfterOrders = new uint256[](depth);
             for (uint256 i = 0; i < depth; i++) {
                 buyRequestIds[i] = i + 1;
-                // 第一个插入头部，后续插入到前一个 priceLevel 之后
-                // 每次 _clearOrderBook() 后 priceLevel IDs 从 1 开始
-                insertAfterPriceLevels[i] = (i == 0) ? 0 : i;
+                // 第一个插入头部，后续插入到前一个价格之后
+                insertAfterPriceLevels[i] = (i == 0) ? 0 : ((2000 - (i-1) * 5) * 10**8);
                 insertAfterOrders[i] = 0;
             }
             vm.prank(matcher);
@@ -255,8 +258,8 @@ contract GasTest is Test {
             uint256[] memory insertAfter = new uint256[](1);
             uint256[] memory insertAfterOrders = new uint256[](1);
             requestIds[0] = i + 1;
-            // 修正：第一个插入头部，后续插入到前一个 priceLevel 之后
-            insertAfter[0] = (i == 0) ? 0 : i;
+            // 修正：第一个插入头部，后续插入到前一个价格之后
+            insertAfter[0] = (i == 0) ? 0 : ((2000 - (i-1) * 10) * 10**8);
             insertAfterOrders[0] = 0;
 
             vm.prank(matcher);
@@ -290,9 +293,8 @@ contract GasTest is Test {
         uint256[] memory insertAfterOrders = new uint256[](orderCount);
         for (uint256 i = 0; i < orderCount; i++) {
             requestIds[i] = i + 1;
-            // 修正：第一个插入头部，后续插入到前一个 priceLevel 之后
-            // 清理后 orderbook 重新部署，priceLevel IDs 从 1 开始
-            insertAfter[i] = (i == 0) ? 0 : i;  // priceLevel IDs: 1, 2, 3...
+            // 修正：第一个插入头部，后续插入到前一个价格之后
+            insertAfter[i] = (i == 0) ? 0 : ((2000 - (i-1) * 10) * 10**8);
             insertAfterOrders[i] = 0;
         }
 

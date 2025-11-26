@@ -219,8 +219,18 @@ contract AutoMatchingTest is Test {
         requestIds[4] = buy2;
         requestIds[5] = buy3;
 
+        // 设置正确的插入位置
+        // Ask订单(价格从低到高): 2000 -> 2100 -> 2200
+        priceLevels[0] = 0;                  // sell1 (2000): 插入头部
+        priceLevels[1] = 2000 * 10**8;       // sell2 (2100): 插入到2000之后
+        priceLevels[2] = 2100 * 10**8;       // sell3 (2200): 插入到2100之后
+
+        // Buy订单会触发自动撮合，全部插入头部
+        priceLevels[3] = 0;                  // buy1 (2000): 会与sell1匹配
+        priceLevels[4] = 0;                  // buy2 (2100): 会与sell2匹配
+        priceLevels[5] = 0;                  // buy3 (1900): 不会匹配，保留
+
         for (uint i = 0; i < 6; i++) {
-            priceLevels[i] = 0;
             afterOrders[i] = 0;
         }
 
