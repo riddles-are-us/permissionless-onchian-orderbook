@@ -141,6 +141,29 @@ function removeMarketOrder(
 ) external
 ```
 
+#### `batchProcessRequests()` - 批量处理请求
+```solidity
+function batchProcessRequests(
+    uint256[] calldata requestIds,           // 请求ID数组（必须按Sequencer队列顺序）
+    uint256[] calldata insertAfterPriceLevels, // 每个订单的插入位置（价格层级）
+    uint256[] calldata insertAfterOrders       // 每个订单的插入位置（订单ID）
+) external
+```
+
+**说明**：
+- 批量处理多个 Sequencer 请求，支持 PlaceOrder 和 RemoveOrder
+- `requestIds` 必须从队列头部开始，按顺序排列
+- 链下 Matcher 计算 `insertAfterPriceLevels`，链上只验证位置正确性
+- 大幅节省 gas（避免多次交易的基础 gas 开销）
+- 自动触发撮合：插入订单后会尝试与对手方撮合
+
+**处理流程**：
+1. 验证 `requestIds[0]` 是队列头部
+2. 依次处理每个请求（PlaceOrder 或 RemoveOrder）
+3. PlaceOrder: 验证插入位置，插入订单，尝试撮合
+4. RemoveOrder: 从订单簿移除订单，解锁资金
+5. 从 Sequencer 队列弹出已处理的请求
+
 ## 使用流程示例
 
 ### 完整流程：提交并插入限价单
@@ -326,21 +349,23 @@ uint256 headOrderId = sequencer.getHeadOrderId();
 
 ## 撮合引擎
 
-### 核心撮合函数
+### 自动撮合机制
 
-#### `matchOrders()` - 撮合限价单
-```solidity
-function matchOrders(
-    bytes32 tradingPair,
-    uint256 maxIterations  // 最大撮合次数（防止gas耗尽）
-) external returns (uint256 totalTrades)
+**撮合在订单插入时自动触发**，无需单独调用撮合函数：
+
+```
+batchProcessRequests()
+  → 插入订单
+  → _tryMatchAfterInsertion()  // 自动触发
+      → 限价单撮合
+      → 市价单撮合
 ```
 
 **撮合逻辑**:
 1. 获取最优买价（bidHead）和最优卖价（askHead）
 2. 检查是否可以成交：`买价 >= 卖价`
 3. 如果可以成交，执行交易
-4. 重复直到 `买价 < 卖价` 或达到最大次数
+4. 重复直到 `买价 < 卖价` 或达到最大次数（默认10次）
 
 **成交价格**: 使用卖单价格（价格优先原则）
 
@@ -349,50 +374,19 @@ function matchOrders(
 - 未完全成交的订单保留在订单簿中
 - 完全成交的订单自动从订单簿移除
 
-#### `matchMarketOrders()` - 撮合市价单
-```solidity
-function matchMarketOrders(
-    bytes32 tradingPair,
-    uint256 maxIterations
-) external returns (uint256 totalTrades)
-```
+### 手动撮合函数（可选）
 
-**撮合逻辑**:
-- 市价买单：与最优卖价（askHead）撮合
-- 市价卖单：与最优买价（bidHead）撮合
-
-#### `matchAll()` - 完整撮合
-```solidity
-function matchAll(
-    bytes32 tradingPair,
-    uint256 maxIterations
-) external returns (uint256 limitTrades, uint256 marketTrades)
-```
-
-先撮合限价单，再撮合市价单。
-
-### 撮合示例
+以下函数可用于手动触发撮合，通常不需要调用：
 
 ```solidity
-bytes32 pair = keccak256("ETH/USDC");
+// 手动撮合限价单
+function matchOrders(bytes32 tradingPair, uint256 maxIterations) external returns (uint256)
 
-// 假设订单簿状态:
-// Bid: 2000 (10), 1990 (5)
-// Ask: 1995 (8), 2005 (12)
-
-// 执行撮合
-uint256 trades = orderBook.matchOrders(pair, 100);
-
-// 撮合结果:
-// - 买单 2000 与 卖单 1995 成交 8个，成交价 1995
-// - 买单 2000 剩余 2个，继续与 卖单 2005 成交 2个，成交价 2005
-// - 买单 1990 < 卖单 2005，停止撮合
-//
-// 最终状态:
-// Bid: 1990 (5)
-// Ask: 2005 (10)
-// 确保了: 最高买价(1990) < 最低卖价(2005) ✓
+// 手动撮合市价单
+function matchMarketOrders(bytes32 tradingPair, uint256 maxIterations) external returns (uint256)
 ```
+
+**使用场景**：当自动撮合因 gas 限制未完全执行时，可手动补充撮合。
 
 ### 撮合事件
 
@@ -422,52 +416,10 @@ event OrderFilled(
 ### 撮合保证
 
 1. **价格单调性**: 撮合后确保 `最高买价 < 最低卖价`
-2. **价格-时间优先**:
-   - 价格优先：最优价格优先撮合
-   - 时间优先：同价格层级内按FIFO顺序
+2. **价格-时间优先**: 价格优先，同价格按 FIFO 顺序
 3. **部分成交**: 支持订单部分成交，未成交部分保留
 4. **自动清理**: 完全成交的订单自动移除
-5. **Gas控制**: 通过maxIterations参数控制单次执行的撮合次数
-
-### 撮合流程图
-
-```
-┌─────────────────┐
-│  matchOrders()  │
-└────────┬────────┘
-         │
-         ▼
-   ┌─────────────┐
-   │ bidHead价格 │ >= ┌─────────────┐
-   │   >= ?      │    │ askHead价格 │
-   └─────┬───────┘    └─────────────┘
-         │ Yes
-         ▼
-   ┌──────────────────┐
-   │  执行交易         │
-   │  - 计算成交量     │
-   │  - 更新filledAmount│
-   │  - 更新totalVolume│
-   │  - emit Trade事件 │
-   └─────┬────────────┘
-         │
-         ▼
-   ┌──────────────────┐
-   │  检查订单状态     │
-   │  完全成交?       │
-   └─────┬────────────┘
-         │ Yes
-         ▼
-   ┌──────────────────┐
-   │  移除订单         │
-   │  - 从链表移除     │
-   │  - 删除订单数据   │
-   │  - 清理空价格层级 │
-   └─────┬────────────┘
-         │
-         ▼
-   继续下一轮撮合...
-```
+5. **Gas控制**: 每次插入后最多撮合10次，防止 gas 耗尽
 
 ## Rust Matcher 引擎
 

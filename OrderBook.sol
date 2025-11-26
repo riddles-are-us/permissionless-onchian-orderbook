@@ -943,9 +943,10 @@ contract OrderBook {
         uint256 newOrderId,
         bool isAsk
     ) internal {
-        // 尝试匹配最多 10 次（防止 gas 耗尽）
-        // 这个数字可以根据实际情况调整
-        uint256 maxIterations = 10;
+        // 尝试匹配最多 50 次
+        // 每次撮合约消耗 50,000-100,000 gas
+        // 50次 ≈ 2.5M-5M gas，BSC上约 $0.15-0.50
+        uint256 maxIterations = 50;
 
         // 匹配限价单
         _matchOrdersInternal(tradingPair, maxIterations);
