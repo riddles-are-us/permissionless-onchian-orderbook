@@ -436,8 +436,11 @@ impl OrderBookSimulator {
 
     /// 插入后尝试撮合（对应链上 _tryMatchAfterInsertion）
     fn try_match_after_insertion(&mut self) {
-        let max_iterations = 10;
+        let max_iterations = 50;
+        // 先匹配限价单
         self.match_orders_internal(max_iterations);
+        // 再匹配市价单
+        self.match_market_orders_internal(max_iterations);
     }
 
     /// 内部撮合逻辑（对应链上 _matchOrdersInternal）
@@ -696,6 +699,273 @@ impl OrderBookSimulator {
 
         order_ids
     }
+
+    // ============ 市价单相关方法 ============
+
+    /// 模拟插入市价单（对应链上 insertMarketOrder）
+    /// 市价单总是插入到队尾（FIFO），不需要 insertAfterPrice
+    pub fn simulate_insert_market_order(&mut self, order_id: U256, amount: U256, is_ask: bool) {
+        debug!(
+            "Inserting market order {} (amount={}, is_ask={})",
+            order_id, amount, is_ask
+        );
+
+        // 创建市价单
+        let order = SimOrder {
+            id: order_id,
+            amount,
+            filled_amount: EMPTY,
+            is_market_order: true,
+            price_level: EMPTY, // 市价单不需要价格层级
+            next_order_id: EMPTY,
+            prev_order_id: EMPTY,
+        };
+        self.orders.insert(order_id, order);
+
+        // 插入到市价单队列尾部
+        self.insert_market_order_at_tail(order_id, is_ask);
+
+        // 执行撮合
+        self.try_match_after_insertion();
+    }
+
+    /// 将市价单插入到队尾（对应链上 _insertMarketOrderAtTail）
+    fn insert_market_order_at_tail(&mut self, order_id: U256, is_ask: bool) {
+        let old_tail = if is_ask {
+            self.market_ask_tail
+        } else {
+            self.market_bid_tail
+        };
+
+        if old_tail.is_zero() {
+            // 列表为空，设置为 head 和 tail
+            if is_ask {
+                self.market_ask_head = order_id;
+                self.market_ask_tail = order_id;
+            } else {
+                self.market_bid_head = order_id;
+                self.market_bid_tail = order_id;
+            }
+        } else {
+            // 插入到尾部
+            if let Some(tail_order) = self.orders.get_mut(&old_tail) {
+                tail_order.next_order_id = order_id;
+            }
+            if let Some(new_order) = self.orders.get_mut(&order_id) {
+                new_order.prev_order_id = old_tail;
+            }
+
+            // 更新 tail
+            if is_ask {
+                self.market_ask_tail = order_id;
+            } else {
+                self.market_bid_tail = order_id;
+            }
+        }
+    }
+
+    /// 从市价单列表中移除订单（对应链上 _removeMarketOrderFromList）
+    fn remove_market_order_from_list(&mut self, order_id: U256, is_ask: bool) {
+        let (prev_order_id, next_order_id) = if let Some(order) = self.orders.get(&order_id) {
+            (order.prev_order_id, order.next_order_id)
+        } else {
+            return;
+        };
+
+        // 更新前一个订单的 next
+        if !prev_order_id.is_zero() {
+            if let Some(prev_order) = self.orders.get_mut(&prev_order_id) {
+                prev_order.next_order_id = next_order_id;
+            }
+        } else {
+            // 这是头节点
+            if is_ask {
+                self.market_ask_head = next_order_id;
+            } else {
+                self.market_bid_head = next_order_id;
+            }
+        }
+
+        // 更新后一个订单的 prev
+        if !next_order_id.is_zero() {
+            if let Some(next_order) = self.orders.get_mut(&next_order_id) {
+                next_order.prev_order_id = prev_order_id;
+            }
+        } else {
+            // 这是尾节点
+            if is_ask {
+                self.market_ask_tail = prev_order_id;
+            } else {
+                self.market_bid_tail = prev_order_id;
+            }
+        }
+    }
+
+    /// 市价单撮合逻辑（对应链上 _matchMarketOrdersInternal）
+    fn match_market_orders_internal(&mut self, max_iterations: usize) {
+        let mut iterations = 0;
+
+        // 1. 匹配市价买单与最优卖价（限价单）
+        while iterations < max_iterations {
+            let market_bid_head = self.market_bid_head;
+            let ask_head = self.ask_head;
+
+            // 如果任意一方为空，跳出
+            if market_bid_head.is_zero() || ask_head.is_zero() {
+                break;
+            }
+
+            // 获取限价卖单队列头部订单
+            let ask_key = Self::get_price_level_key(ask_head, true);
+            let ask_head_order = if let Some(level) = self.price_levels.get(&ask_key) {
+                level.head_order_id
+            } else {
+                break;
+            };
+
+            if ask_head_order.is_zero() {
+                break;
+            }
+
+            // 执行市价买单与限价卖单的撮合
+            let traded = self.execute_market_trade(market_bid_head, ask_head_order, false);
+            if !traded {
+                break;
+            }
+
+            iterations += 1;
+        }
+
+        // 2. 匹配市价卖单与最优买价（限价单）
+        while iterations < max_iterations {
+            let market_ask_head = self.market_ask_head;
+            let bid_head = self.bid_head;
+
+            // 如果任意一方为空，跳出
+            if market_ask_head.is_zero() || bid_head.is_zero() {
+                break;
+            }
+
+            // 获取限价买单队列头部订单
+            let bid_key = Self::get_price_level_key(bid_head, false);
+            let bid_head_order = if let Some(level) = self.price_levels.get(&bid_key) {
+                level.head_order_id
+            } else {
+                break;
+            };
+
+            if bid_head_order.is_zero() {
+                break;
+            }
+
+            // 执行市价卖单与限价买单的撮合
+            let traded = self.execute_market_trade(market_ask_head, bid_head_order, true);
+            if !traded {
+                break;
+            }
+
+            iterations += 1;
+        }
+    }
+
+    /// 执行市价单与限价单的交易
+    /// is_market_ask: true 表示市价卖单与限价买单撮合，false 表示市价买单与限价卖单撮合
+    fn execute_market_trade(
+        &mut self,
+        market_order_id: U256,
+        limit_order_id: U256,
+        is_market_ask: bool,
+    ) -> bool {
+        // 获取市价单信息
+        let market_remaining = if let Some(order) = self.orders.get(&market_order_id) {
+            order.amount - order.filled_amount
+        } else {
+            return false;
+        };
+
+        // 获取限价单信息
+        let (limit_remaining, limit_price_level) = if let Some(order) = self.orders.get(&limit_order_id) {
+            (order.amount - order.filled_amount, order.price_level)
+        } else {
+            return false;
+        };
+
+        // 计算成交数量
+        let trade_amount = market_remaining.min(limit_remaining);
+        if trade_amount.is_zero() {
+            return false;
+        }
+
+        debug!(
+            "Market trade: market_order={}, limit_order={}, amount={}",
+            market_order_id, limit_order_id, trade_amount
+        );
+
+        // 更新市价单已成交数量
+        if let Some(order) = self.orders.get_mut(&market_order_id) {
+            order.filled_amount = order.filled_amount + trade_amount;
+        }
+
+        // 更新限价单已成交数量
+        if let Some(order) = self.orders.get_mut(&limit_order_id) {
+            order.filled_amount = order.filled_amount + trade_amount;
+        }
+
+        // 更新限价单所在价格层级的总挂单量
+        let limit_is_ask = !is_market_ask;
+        let limit_key = Self::get_price_level_key(limit_price_level, limit_is_ask);
+        if let Some(level) = self.price_levels.get_mut(&limit_key) {
+            level.total_volume = level.total_volume.saturating_sub(trade_amount);
+        }
+
+        // 检查市价单是否完全成交
+        let market_fully_filled = if let Some(order) = self.orders.get(&market_order_id) {
+            order.filled_amount >= order.amount
+        } else {
+            false
+        };
+
+        if market_fully_filled {
+            // 从市价单列表中移除
+            self.remove_market_order_from_list(market_order_id, is_market_ask);
+            // 删除订单数据
+            self.orders.remove(&market_order_id);
+        }
+
+        // 检查限价单是否完全成交
+        let limit_fully_filled = if let Some(order) = self.orders.get(&limit_order_id) {
+            order.filled_amount >= order.amount
+        } else {
+            false
+        };
+
+        if limit_fully_filled {
+            self.remove_filled_order(limit_order_id, limit_is_ask);
+        }
+
+        true
+    }
+
+    /// 获取市价单列表（用于调试）
+    pub fn get_market_orders(&self, is_ask: bool) -> Vec<U256> {
+        let mut order_ids = Vec::new();
+        let mut current = if is_ask {
+            self.market_ask_head
+        } else {
+            self.market_bid_head
+        };
+
+        while !current.is_zero() {
+            order_ids.push(current);
+            if let Some(order) = self.orders.get(&current) {
+                current = order.next_order_id;
+            } else {
+                break;
+            }
+        }
+
+        order_ids
+    }
 }
 
 #[cfg(test)]
@@ -903,5 +1173,178 @@ mod tests {
         // 新买单应该插入到头部
         let insert_after = sim.simulate_insert_order(U256::from(3), U256::from(95), U256::from(10), false);
         assert_eq!(insert_after, U256::zero());
+    }
+
+    // ============ 市价单测试 ============
+
+    #[test]
+    fn test_market_order_insertion() {
+        let mut sim = OrderBookSimulator::new();
+
+        // 插入一个限价卖单: price=100, amount=10
+        sim.simulate_insert_order(U256::from(1), U256::from(100), U256::from(10), true);
+
+        // 插入一个市价买单，应该立即与卖单撮合
+        sim.simulate_insert_market_order(U256::from(2), U256::from(5), false);
+
+        // 市价买单完全成交，不应该在订单簿中
+        assert!(!sim.orders.contains_key(&U256::from(2)));
+
+        // 限价卖单部分成交
+        let ask_order = sim.orders.get(&U256::from(1)).unwrap();
+        assert_eq!(ask_order.filled_amount, U256::from(5));
+    }
+
+    #[test]
+    fn test_market_order_fully_matches_limit() {
+        let mut sim = OrderBookSimulator::new();
+
+        // 插入限价卖单: price=100, amount=10
+        sim.simulate_insert_order(U256::from(1), U256::from(100), U256::from(10), true);
+
+        // 插入市价买单，amount=10，完全撮合
+        sim.simulate_insert_market_order(U256::from(2), U256::from(10), false);
+
+        // 两个订单都应该被移除
+        assert!(!sim.orders.contains_key(&U256::from(1)));
+        assert!(!sim.orders.contains_key(&U256::from(2)));
+
+        // 价格层级也应该被移除
+        assert!(sim.get_price_levels(true).is_empty());
+    }
+
+    #[test]
+    fn test_market_order_partial_fill() {
+        let mut sim = OrderBookSimulator::new();
+
+        // 插入限价卖单: price=100, amount=5
+        sim.simulate_insert_order(U256::from(1), U256::from(100), U256::from(5), true);
+
+        // 插入市价买单，amount=10，部分成交
+        sim.simulate_insert_market_order(U256::from(2), U256::from(10), false);
+
+        // 限价卖单完全成交，被移除
+        assert!(!sim.orders.contains_key(&U256::from(1)));
+
+        // 市价买单部分成交，保留在队列中
+        let market_order = sim.orders.get(&U256::from(2)).unwrap();
+        assert_eq!(market_order.filled_amount, U256::from(5));
+        assert_eq!(market_order.is_market_order, true);
+
+        // 市价买单应该在队列中
+        assert_eq!(sim.get_market_orders(false), vec![U256::from(2)]);
+    }
+
+    #[test]
+    fn test_market_sell_order() {
+        let mut sim = OrderBookSimulator::new();
+
+        // 插入限价买单: price=100, amount=10
+        sim.simulate_insert_order(U256::from(1), U256::from(100), U256::from(10), false);
+
+        // 插入市价卖单
+        sim.simulate_insert_market_order(U256::from(2), U256::from(5), true);
+
+        // 市价卖单完全成交
+        assert!(!sim.orders.contains_key(&U256::from(2)));
+
+        // 限价买单部分成交
+        let bid_order = sim.orders.get(&U256::from(1)).unwrap();
+        assert_eq!(bid_order.filled_amount, U256::from(5));
+    }
+
+    #[test]
+    fn test_market_order_affects_subsequent_limit_order() {
+        let mut sim = OrderBookSimulator::new();
+
+        // 场景：批处理中市价单在限价单之前，市价单的撮合会影响后续限价单的 insertAfterPrice
+        //
+        // 初始状态：
+        // Asks: [100, 101, 102]
+        //
+        // 批处理：
+        // 1. Market Buy (amount=全部@100) - 会移除价格层 100
+        // 2. Limit Sell @ 100.5 - 应该 insertAfterPrice = 101（因为 100 已被移除）
+
+        // 设置初始订单簿
+        sim.simulate_insert_order(U256::from(1), U256::from(100), U256::from(10), true); // ask@100
+        sim.simulate_insert_order(U256::from(2), U256::from(101), U256::from(10), true); // ask@101
+        sim.simulate_insert_order(U256::from(3), U256::from(102), U256::from(10), true); // ask@102
+
+        assert_eq!(sim.get_price_levels(true), vec![
+            U256::from(100),
+            U256::from(101),
+            U256::from(102),
+        ]);
+
+        // 市价买单，消耗掉价格层 100 的所有订单
+        sim.simulate_insert_market_order(U256::from(10), U256::from(10), false);
+
+        // 价格层 100 应该被移除
+        assert_eq!(sim.get_price_levels(true), vec![
+            U256::from(101),
+            U256::from(102),
+        ]);
+
+        // 现在插入限价卖单 @ 100（比 101 低）
+        // 应该 insertAfterPrice = 0（插入到头部）
+        let insert_after = sim.simulate_insert_order(
+            U256::from(11),
+            U256::from(100),
+            U256::from(10),
+            true,
+        );
+        assert_eq!(insert_after, U256::zero()); // 正确！插入到头部
+
+        // 验证新状态
+        assert_eq!(sim.get_price_levels(true), vec![
+            U256::from(100),
+            U256::from(101),
+            U256::from(102),
+        ]);
+    }
+
+    #[test]
+    fn test_market_order_queue_fifo() {
+        let mut sim = OrderBookSimulator::new();
+
+        // 市价单应该按 FIFO 顺序排列
+        // 先插入市价买单（没有卖单可撮合）
+        sim.simulate_insert_market_order(U256::from(1), U256::from(10), false);
+        sim.simulate_insert_market_order(U256::from(2), U256::from(10), false);
+        sim.simulate_insert_market_order(U256::from(3), U256::from(10), false);
+
+        // 验证 FIFO 顺序
+        assert_eq!(sim.get_market_orders(false), vec![
+            U256::from(1),
+            U256::from(2),
+            U256::from(3),
+        ]);
+        assert_eq!(sim.market_bid_head, U256::from(1));
+        assert_eq!(sim.market_bid_tail, U256::from(3));
+    }
+
+    #[test]
+    fn test_multiple_market_orders_match_one_limit() {
+        let mut sim = OrderBookSimulator::new();
+
+        // 插入一个大额限价卖单
+        sim.simulate_insert_order(U256::from(1), U256::from(100), U256::from(30), true);
+
+        // 插入多个市价买单
+        sim.simulate_insert_market_order(U256::from(10), U256::from(10), false);
+        sim.simulate_insert_market_order(U256::from(11), U256::from(10), false);
+        sim.simulate_insert_market_order(U256::from(12), U256::from(10), false);
+
+        // 所有市价买单应该已成交
+        assert!(!sim.orders.contains_key(&U256::from(10)));
+        assert!(!sim.orders.contains_key(&U256::from(11)));
+        assert!(!sim.orders.contains_key(&U256::from(12)));
+
+        // 限价卖单也应该完全成交
+        assert!(!sim.orders.contains_key(&U256::from(1)));
+
+        // 价格层级也应该被移除
+        assert!(sim.get_price_levels(true).is_empty());
     }
 }

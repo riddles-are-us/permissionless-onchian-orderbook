@@ -141,30 +141,47 @@ impl MatchingEngine {
                     );
                 }
                 RequestType::PlaceOrder => {
-                    // 只处理限价单
-                    if request.order_type != OrderType::Limit {
-                        continue;
+                    if request.order_type == OrderType::Limit {
+                        // 限价单：使用 simulator 模拟插入，获取 insertAfterPrice
+                        let insert_after_price = sim.simulate_insert_order(
+                            request.request_id,
+                            request.price,
+                            request.amount,
+                            request.is_ask,
+                        );
+
+                        debug!(
+                            "PlaceOrder {} (limit, price={}, is_ask={}): insertAfterPrice={}",
+                            request.request_id, request.price, request.is_ask, insert_after_price
+                        );
+
+                        // 添加到结果中
+                        result.add_order(
+                            request.request_id,
+                            insert_after_price,
+                            U256::zero(), // insertAfterOrder 设为 0（插入到价格层级头部）
+                        );
+                    } else {
+                        // 市价单：模拟插入市价单队列并撮合
+                        // 市价单不需要 insertAfterPrice，但需要模拟以更新订单簿状态
+                        sim.simulate_insert_market_order(
+                            request.request_id,
+                            request.amount,
+                            request.is_ask,
+                        );
+
+                        debug!(
+                            "PlaceOrder {} (market, amount={}, is_ask={}): simulated",
+                            request.request_id, request.amount, request.is_ask
+                        );
+
+                        // 市价单的 insertAfterPrice 和 insertAfterOrder 都设为 0
+                        result.add_order(
+                            request.request_id,
+                            U256::zero(),
+                            U256::zero(),
+                        );
                     }
-
-                    // 使用 simulator 模拟插入，获取 insertAfterPrice
-                    let insert_after_price = sim.simulate_insert_order(
-                        request.request_id,
-                        request.price,
-                        request.amount,
-                        request.is_ask,
-                    );
-
-                    debug!(
-                        "PlaceOrder {} (price={}, is_ask={}): insertAfterPrice={}",
-                        request.request_id, request.price, request.is_ask, insert_after_price
-                    );
-
-                    // 添加到结果中
-                    result.add_order(
-                        request.request_id,
-                        insert_after_price,
-                        U256::zero(), // insertAfterOrder 设为 0（插入到价格层级头部）
-                    );
                 }
             }
         }
