@@ -298,7 +298,8 @@ contract OrderBookTest is Test {
 
         // 验证锁定金额
         // Alice 应该锁定 2000*1 + 1950*2 + 1900*1 = 7800 USDC
-        assertEq(aliceUsdcLocked, 7800 * 10**6);
+        // 限价买单需要额外锁定 0.1% 费用：7800 * 1.001 = 7807.8 USDC
+        assertEq(aliceUsdcLocked, 7807800000);
 
         // Bob 应该锁定 1 + 1.5 + 0.5 = 3 WETH
         assertEq(bobWethLocked, 3 ether);
@@ -329,8 +330,9 @@ contract OrderBookTest is Test {
         console.log("  Available:", aliceUsdcAvail / 10**6);
         console.log("  Locked:", aliceUsdcLocked / 10**6);
 
-        // 锁定应该减少 2000 USDC
-        assertEq(aliceUsdcLocked, 5800 * 10**6);
+        // 锁定应该减少 2002 USDC（2000 + 0.1%费用）
+        // 剩余：5805.8 USDC（5800 + 0.1%费用）
+        assertEq(aliceUsdcLocked, 5805800000);
     }
 
     function testMarketOrder() public {
@@ -414,7 +416,8 @@ contract OrderBookTest is Test {
         console.log("\n--- Test: Account Balances ---");
         (,uint256 aliceUsdcLocked,) = accountContract.getBalance(alice, address(usdc));
         (,uint256 bobWethLocked,) = accountContract.getBalance(bob, address(weth));
-        assertEq(aliceUsdcLocked, 7800 * 10**6);
+        // 限价买单需要额外锁定 0.1% 费用：7800 * 1.001 = 7807.8 USDC
+        assertEq(aliceUsdcLocked, 7807800000);
         assertEq(bobWethLocked, 3 ether);
 
         // 撤单测试
@@ -431,7 +434,8 @@ contract OrderBookTest is Test {
 
         (,uint256 aliceUsdcLockedAfter,) = accountContract.getBalance(alice, address(usdc));
         console.log("  Alice USDC locked after removal:", aliceUsdcLockedAfter / 10**6);
-        assertEq(aliceUsdcLockedAfter, 5800 * 10**6);
+        // 剩余：5805.8 USDC（5800 + 0.1%费用）
+        assertEq(aliceUsdcLockedAfter, 5805800000);
 
         console.log("\n========================================");
         console.log("All Tests Passed!");
