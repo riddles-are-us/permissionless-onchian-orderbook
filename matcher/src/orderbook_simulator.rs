@@ -24,6 +24,7 @@ pub struct SimOrder {
     pub amount: U256,
     pub filled_amount: U256,
     pub is_market_order: bool,
+    pub is_ask: bool,          // 是否为卖单（用于移除订单时确定侧）
     pub price_level: U256,     // 该订单所属的价格
     pub next_order_id: U256,
     pub prev_order_id: U256,
@@ -153,6 +154,7 @@ impl OrderBookSimulator {
             amount,
             filled_amount: EMPTY,
             is_market_order: false,
+            is_ask,
             price_level: price,
             next_order_id: EMPTY,
             prev_order_id: EMPTY,
@@ -170,17 +172,13 @@ impl OrderBookSimulator {
 
     /// 模拟移除订单（对应链上 removeOrder）
     /// 用于处理 RemoveOrder 类型的请求
-    pub fn simulate_remove_order(&mut self, order_id: U256, is_ask: bool) -> bool {
-        // 检查订单是否存在
-        if !self.orders.contains_key(&order_id) {
-            debug!("Order {} not found, skip removal", order_id);
-            return false;
-        }
-
-        // 获取订单的价格层级
-        let price_level_id = if let Some(order) = self.orders.get(&order_id) {
-            order.price_level
+    /// 注意：is_ask 参数现在被忽略，从订单本身获取
+    pub fn simulate_remove_order(&mut self, order_id: U256, _is_ask: bool) -> bool {
+        // 检查订单是否存在并获取信息
+        let (price_level_id, is_ask) = if let Some(order) = self.orders.get(&order_id) {
+            (order.price_level, order.is_ask)
         } else {
+            debug!("Order {} not found, skip removal", order_id);
             return false;
         };
 
@@ -716,6 +714,7 @@ impl OrderBookSimulator {
             amount,
             filled_amount: EMPTY,
             is_market_order: true,
+            is_ask,
             price_level: EMPTY, // 市价单不需要价格层级
             next_order_id: EMPTY,
             prev_order_id: EMPTY,

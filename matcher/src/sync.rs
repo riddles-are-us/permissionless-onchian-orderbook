@@ -218,7 +218,7 @@ impl StateSynchronizer {
             };
 
             // 同步该价格层级的订单
-            let orders_synced = self.sync_orders_at_price_level(&sim_level).await?;
+            let orders_synced = self.sync_orders_at_price_level(&sim_level, is_ask).await?;
             order_count += orders_synced;
 
             // 添加到 GlobalState.orderbook
@@ -244,7 +244,7 @@ impl StateSynchronizer {
     }
 
     /// 同步指定价格层级的所有订单到 GlobalState
-    async fn sync_orders_at_price_level(&self, level: &SimPriceLevel) -> Result<usize> {
+    async fn sync_orders_at_price_level(&self, level: &SimPriceLevel, is_ask: bool) -> Result<usize> {
         let mut current_order_id = level.head_order_id;
         let mut count = 0;
 
@@ -257,6 +257,7 @@ impl StateSynchronizer {
                 amount: order_data.2,
                 filled_amount: order_data.3,
                 is_market_order: order_data.4,
+                is_ask,
                 price_level: order_data.5,
                 next_order_id: order_data.6,
                 prev_order_id: order_data.7,
@@ -399,6 +400,7 @@ impl StateSynchronizer {
                                 amount: inserted.amount,
                                 filled_amount: U256::zero(),
                                 is_market_order: false,
+                                is_ask: inserted.is_ask,
                                 price_level: inserted.price,
                                 next_order_id: U256::zero(),
                                 prev_order_id: old_tail,
