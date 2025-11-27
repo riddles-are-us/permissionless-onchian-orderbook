@@ -196,6 +196,18 @@ impl MatchingEngine {
             match_result.order_ids.len()
         );
 
+        // 打印详细的交易参数
+        info!("📋 Batch parameters:");
+        for i in 0..match_result.order_ids.len() {
+            info!(
+                "   [{}] requestId={}, insertAfterPrice={}, insertAfterOrder={}",
+                i,
+                match_result.order_ids[i],
+                match_result.insert_after_price_levels[i],
+                match_result.insert_after_orders[i]
+            );
+        }
+
         // 调用合约的 batchProcessRequests 函数
         let tx = self
             .orderbook
@@ -206,6 +218,21 @@ impl MatchingEngine {
             )
             .gas_price(self.config.executor.gas_price_gwei * 1_000_000_000)
             .gas(self.config.executor.gas_limit);
+
+        // 先尝试 estimate gas 来检查是否会 revert
+        match tx.estimate_gas().await {
+            Ok(gas) => {
+                info!("⛽ Estimated gas: {}", gas);
+            }
+            Err(e) => {
+                error!("❌ Transaction would revert! Error: {:?}", e);
+                // 尝试获取更详细的错误信息
+                if let Some(revert) = e.as_revert() {
+                    error!("❌ Revert reason: {}", revert);
+                }
+                return Err(anyhow::anyhow!("Transaction would revert: {:?}", e));
+            }
+        }
 
         // 发送交易
         let pending_tx = tx.send().await.context("Failed to send transaction")?;
@@ -218,11 +245,19 @@ impl MatchingEngine {
             Ok(Some(receipt)) => {
                 if receipt.status != Some(1.into()) {
                     error!("❌ Transaction {:?} failed", tx_hash);
+                    error!("❌ Gas used: {:?}", receipt.gas_used);
+                    error!("❌ Block number: {:?}", receipt.block_number);
+                    // 打印所有日志
+                    for (i, log) in receipt.logs.iter().enumerate() {
+                        error!("❌ Log[{}]: {:?}", i, log);
+                    }
                     return Err(anyhow::anyhow!("Transaction reverted"));
                 } else {
                     info!(
-                        "✅ Transaction {:?} confirmed, {} events emitted",
+                        "✅ Transaction {:?} confirmed in block {:?}, gas used: {:?}, {} events emitted",
                         tx_hash,
+                        receipt.block_number,
+                        receipt.gas_used,
                         receipt.logs.len()
                     );
                 }

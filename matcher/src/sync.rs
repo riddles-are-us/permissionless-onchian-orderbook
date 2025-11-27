@@ -334,15 +334,13 @@ impl StateSynchronizer {
 
         info!("📡 Starting OrderBook event listener from block {}", from_block);
 
-        // 创建事件过滤器（从同步的区块开始）
-        // 使用 from_block + 1 避免重复处理已同步的状态
-        let event_start_block = from_block + 1;
-        let trade_filter = orderbook.event::<TradeFilter>().from_block(event_start_block);
-        let order_filled_filter = orderbook.event::<OrderFilledFilter>().from_block(event_start_block);
-        let order_removed_filter = orderbook.event::<OrderRemovedFilter>().from_block(event_start_block);
-        let order_inserted_filter = orderbook.event::<OrderInsertedFilter>().from_block(event_start_block);
-        let price_level_created_filter = orderbook.event::<PriceLevelCreatedFilter>().from_block(event_start_block);
-        let price_level_removed_filter = orderbook.event::<PriceLevelRemovedFilter>().from_block(event_start_block);
+        // 创建事件过滤器 - 只监听新事件（不指定 from_block 避免 RPC 限制）
+        let trade_filter = orderbook.event::<TradeFilter>();
+        let order_filled_filter = orderbook.event::<OrderFilledFilter>();
+        let order_removed_filter = orderbook.event::<OrderRemovedFilter>();
+        let order_inserted_filter = orderbook.event::<OrderInsertedFilter>();
+        let price_level_created_filter = orderbook.event::<PriceLevelCreatedFilter>();
+        let price_level_removed_filter = orderbook.event::<PriceLevelRemovedFilter>();
 
         // 创建事件流
         let mut trade_stream = trade_filter.stream().await?.take(10000);
@@ -629,11 +627,9 @@ impl StateSynchronizer {
 
         info!("📡 Starting Sequencer event listener from block {}", from_block);
 
-        // 创建事件过滤器（从同步的区块之后开始，避免重复处理）
-        // 使用 from_block + 1 因为 from_block 的状态已经通过 RPC 同步了
-        let event_start_block = from_block + 1;
-        let place_order_filter = sequencer.event::<PlaceOrderRequestedFilter>().from_block(event_start_block);
-        let remove_order_filter = sequencer.event::<RemoveOrderRequestedFilter>().from_block(event_start_block);
+        // 创建事件过滤器 - 只监听新事件（不指定 from_block 避免 RPC 限制）
+        let place_order_filter = sequencer.event::<PlaceOrderRequestedFilter>();
+        let remove_order_filter = sequencer.event::<RemoveOrderRequestedFilter>();
 
         // 创建事件流
         let mut place_order_stream = place_order_filter.stream().await?.take(10000);

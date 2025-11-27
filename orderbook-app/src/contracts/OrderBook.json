@@ -67,6 +67,62 @@
   },
   {
     "type": "function",
+    "name": "getPriceLevel",
+    "inputs": [
+      {
+        "name": "price",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "isAsk",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct OrderBook.PriceLevel",
+        "components": [
+          {
+            "name": "price",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalVolume",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "headOrderId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "tailOrderId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "nextPrice",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "prevPrice",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "getMarketOrderSnapshot",
     "inputs": [
       {

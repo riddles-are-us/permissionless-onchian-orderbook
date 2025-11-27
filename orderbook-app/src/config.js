@@ -1,17 +1,18 @@
-// 配置文件
+// 配置文件 - Sepolia 测试网
 export const CONFIG = {
-  // RPC 节点地址
-  RPC_URL: 'ws://127.0.0.1:8545', // Anvil 本地节点
+  // Sepolia WebSocket RPC 节点地址
+  RPC_URL: 'wss://eth-sepolia.g.alchemy.com/v2/P2hms_foHU-rHhmt8hcpU',
 
-  CHAIN_ID: 31337, // Anvil 链 ID
+  // Sepolia 链 ID
+  CHAIN_ID: 11155111,
 
-  // 合约地址 - 运行 npm run update-config 自动更新
+  // 合约地址 - Sepolia 部署
   CONTRACTS: {
-    ACCOUNT: '0x71498Ed008E4C968551e26eB4B803631241B5D26',
-    ORDERBOOK: '0x751527acFf86638af877D292Ef165300D9AdDd1E',
-    SEQUENCER: '0x3b0f2B6485b9C16B28b268a2CEef5BD7231FFB4d',
-    WETH: '0xA96658Fc034490F0E537bAC43ba48efE0B1C57e3',
-    USDC: '0x6706EB14Aa62f96F605A8492063c810C2a411e9d',
+    ACCOUNT: '0xabe30C50c741Cc5672BEA937f63B21d041Aa1910',
+    ORDERBOOK: '0x94ac6C66c46Be5BA875fDE5e4d3090129685E5Ad',
+    SEQUENCER: '0xE2aABD5A8c28d1AA775181C33075D4d166647A31',
+    WETH: '0x21d73835D6E97A52f1bDB35F9C1ED402111D9F0d',
+    USDC: '0x7802B8c03e0fB83A847AAE822550D4B76aA345F9',
   },
 
   // 交易对 ID
@@ -19,8 +20,8 @@ export const CONFIG = {
 
   // 代币地址（兼容）
   TOKENS: {
-    WETH: '0xA96658Fc034490F0E537bAC43ba48efE0B1C57e3',
-    USDC: '0x6706EB14Aa62f96F605A8492063c810C2a411e9d',
+    WETH: '0x21d73835D6E97A52f1bDB35F9C1ED402111D9F0d',
+    USDC: '0x7802B8c03e0fB83A847AAE822550D4B76aA345F9',
   },
 
   // 交易对
@@ -30,8 +31,8 @@ export const CONFIG = {
   PRICE_DECIMALS: 8,
   AMOUNT_DECIMALS: 8,
 
-  // 刷新间隔（毫秒）
-  REFRESH_INTERVAL: 3000,
+  // 刷新间隔（毫秒）- Sepolia 区块时间较长，可以适当增加
+  REFRESH_INTERVAL: 5000,
 
   // 订单簿深度显示层级数
   DEPTH_LEVELS: 10,

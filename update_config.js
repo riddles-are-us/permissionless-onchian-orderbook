@@ -27,9 +27,56 @@ console.log(`  OrderBook: ${deployments.orderbook}`);
 console.log(`  Sequencer: ${deployments.sequencer}`);
 console.log(`  Pair ID:   ${deployments.pairId}`);
 
-// 1. Matcher 配置通过 build.rs 自动更新
-console.log('\n🔧 Matcher config will be auto-updated on next cargo build');
-console.log('   (via matcher/build.rs)');
+// 1. 更新 matcher/config.toml
+console.log('\n🔧 Updating matcher/config.toml...');
+const matcherConfigPath = path.join(__dirname, 'matcher', 'config.toml');
+const matcherConfigContent = `# OrderBook Matcher 配置
+# 自动生成自 deployments.json
+
+[network]
+# RPC WebSocket 端点
+rpc_url = "ws://127.0.0.1:8545"
+
+# 链 ID (Anvil)
+chain_id = 31337
+
+[contracts]
+# Sequencer 合约地址
+sequencer = "${deployments.sequencer}"
+
+# OrderBook 合约地址
+orderbook = "${deployments.orderbook}"
+
+# Account 合约地址
+account = "${deployments.account}"
+
+[sync]
+# 初始同步的起始区块
+start_block = 0
+
+# 是否同步历史区块数据
+sync_historical = true
+
+[matching]
+# 每批最多处理的请求数
+max_batch_size = 100
+
+# 匹配间隔（毫秒）
+matching_interval_ms = 1000
+
+[executor]
+# 执行者私钥（Anvil Account #0）
+private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+
+# Gas 价格（gwei）
+gas_price_gwei = 1
+
+# Gas 限制
+gas_limit = 5000000
+`;
+
+fs.writeFileSync(matcherConfigPath, matcherConfigContent);
+console.log('✅ matcher/config.toml updated');
 
 // 2. 更新 orderbook-app/src/config.js
 console.log('\n🔧 Updating orderbook-app/src/config.js...');
