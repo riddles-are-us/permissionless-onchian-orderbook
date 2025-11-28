@@ -3,8 +3,10 @@ pragma solidity ^0.8.0;
 
 import "./ISequencer.sol";
 import "./IAccount.sol";
+import "./TradingConstants.sol";
 
 contract OrderBook {
+    using TradingConstants for *;
 
     // 订单结构
     struct Order {
@@ -215,25 +217,26 @@ contract OrderBook {
 
         // 获取tradingPair（从存储中）
         tradingPair = orderTradingPairs[orderIdToRemove];
-        bool isAsk = !order.isMarketOrder ? true : true; // 从订单判断
+        bool isAsk;
 
         // 处理限价单或市价单的删除
         if (order.isMarketOrder) {
-            // 市价单
+            // 市价单：判断是买单还是卖单
+            OrderBookData storage book = orderBooks[tradingPair];
+            isAsk = _isMarketAskOrder(book, orderIdToRemove);
+
             uint256 remainingAmount = order.amount - order.filledAmount;
             if (remainingAmount > 0) {
-                // 市价卖单才锁定了资金
                 account.unlockFunds(
                     order.trader,
                     tradingPair,
-                    true,  // 市价卖单
+                    isAsk,
                     0,
                     remainingAmount,
                     orderIdToRemove
                 );
             }
-            // 需要确定isAsk，从orderBook结构推断
-            _removeMarketOrderFromList(tradingPair, orderIdToRemove, true);
+            _removeMarketOrderFromList(tradingPair, orderIdToRemove, isAsk);
         } else {
             // 限价单
             uint256 priceLevelId = order.priceLevel;
@@ -424,18 +427,22 @@ contract OrderBook {
         tradingPair = orderTradingPairs[orderIdToRemove];
 
         if (order.isMarketOrder) {
+            // 判断市价单是买单还是卖单（通过检查在哪个列表中）
+            OrderBookData storage book = orderBooks[tradingPair];
+            bool isAsk = _isMarketAskOrder(book, orderIdToRemove);
+
             uint256 remainingAmount = order.amount - order.filledAmount;
             if (remainingAmount > 0) {
                 account.unlockFunds(
                     order.trader,
                     tradingPair,
-                    true,
+                    isAsk,
                     0,
                     remainingAmount,
                     orderIdToRemove
                 );
             }
-            _removeMarketOrderFromList(tradingPair, orderIdToRemove, true);
+            _removeMarketOrderFromList(tradingPair, orderIdToRemove, isAsk);
         } else {
             uint256 priceLevelId = order.priceLevel;
 
@@ -485,6 +492,21 @@ contract OrderBook {
             // 使用ask侧的composite key访问priceLevels
             uint256 levelKey = _getPriceLevelKey(currentLevel, true);
             currentLevel = priceLevels[levelKey].nextPrice;
+        }
+        return false;
+    }
+
+    /**
+     * @dev 判断市价单是否为卖单（通过检查在哪个列表中）
+     */
+    function _isMarketAskOrder(OrderBookData storage book, uint256 orderId) internal view returns (bool) {
+        // 遍历市价卖单列表
+        uint256 currentOrderId = book.marketAskHead;
+        while (currentOrderId != EMPTY) {
+            if (currentOrderId == orderId) {
+                return true;
+            }
+            currentOrderId = orders[currentOrderId].nextOrderId;
         }
         return false;
     }
@@ -1041,8 +1063,24 @@ contract OrderBook {
             return false;
         }
 
+        // 成交价格：取卖单价格（价格优先原则）
+        uint256 tradePrice = askPrice;
+
         // 计算可成交数量
-        uint256 bidRemaining = bidOrder.amount - bidOrder.filledAmount;
+        uint256 bidRemaining;
+        bool isBidMarketOrder = bidOrder.isMarketOrder;
+
+        if (isBidMarketOrder) {
+            // 市价买单：amount是quote tokens（要花费的计价代币）
+            // 需要转换为可购买的base tokens数量
+            uint256 quoteRemaining = bidOrder.amount - bidOrder.filledAmount;
+            // bidRemaining = quoteRemaining / tradePrice (with precision handling)
+            bidRemaining = (quoteRemaining * TradingConstants.PRICE_DECIMALS) / tradePrice;
+        } else {
+            // 限价买单：amount是base tokens
+            bidRemaining = bidOrder.amount - bidOrder.filledAmount;
+        }
+
         uint256 askRemaining = askOrder.amount - askOrder.filledAmount;
         uint256 tradeAmount = bidRemaining < askRemaining ? bidRemaining : askRemaining;
 
@@ -1050,11 +1088,14 @@ contract OrderBook {
             return false;
         }
 
-        // 成交价格：取卖单价格（价格优先原则）
-        uint256 tradePrice = askPrice;
-
         // 更新订单已成交数量
-        bidOrder.filledAmount += tradeAmount;
+        if (isBidMarketOrder) {
+            // 市价买单：filledAmount追踪已花费的quote tokens
+            uint256 quoteSpent = (tradeAmount * tradePrice) / TradingConstants.PRICE_DECIMALS;
+            bidOrder.filledAmount += quoteSpent;
+        } else {
+            bidOrder.filledAmount += tradeAmount;
+        }
         askOrder.filledAmount += tradeAmount;
 
         // 更新价格层级的总挂单量
