@@ -175,7 +175,7 @@ contract Sequencer {
      * @notice 提交市价单到Sequencer
      * @param tradingPair 交易对标识符
      * @param isAsk true表示市价卖单，false表示市价买单
-     * @param amount 订单数量
+     * @param amount 市价卖单：要卖出的基础代币数量；市价买单：要花费的计价代币数量
      * @return requestId 请求ID
      * @return orderId 订单ID
      */
@@ -187,8 +187,8 @@ contract Sequencer {
         require(amount > 0, "Amount must be greater than 0");
 
         // 检查用户余额
-        // 市价卖单：需要基础代币
-        // 市价买单：需要计价代币（但金额未知，由Account在执行时检查）
+        // 市价卖单：需要基础代币（amount = 基础代币数量）
+        // 市价买单：需要计价代币（amount = 计价代币数量）
         require(
             account.hasSufficientBalance(msg.sender, tradingPair, isAsk, 0, amount),
             "Insufficient balance"
@@ -211,7 +211,7 @@ contract Sequencer {
 
         // 锁定用户资金
         // 市价卖单：锁定基础代币
-        // 市价买单：不锁定（在执行时从可用余额扣除）
+        // 市价买单：锁定计价代币（amount + 手续费）
         account.lockFunds(msg.sender, tradingPair, isAsk, 0, amount, orderId);
 
         emit PlaceOrderRequested(requestId, orderId, tradingPair, msg.sender, OrderType.MarketOrder, isAsk, 0, amount, block.timestamp);

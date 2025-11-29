@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import "./TradingConstants.sol";
+
 interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
@@ -14,15 +16,7 @@ interface IERC20 {
  * @dev 用户需要先存入资金，下单时会锁定相应金额
  */
 contract Account {
-
-    // 数量精度常数（amount 的小数位数）
-    uint256 public constant AMOUNT_DECIMALS = 10 ** 8;
-    // 价格精度常数（price 的小数位数）
-    uint256 public constant PRICE_DECIMALS = 10 ** 8;
-
-    // 交易费率常数（千分之一 = 0.1%）
-    uint256 public constant FEE_RATE = 1;
-    uint256 public constant FEE_BASE = 1000;
+    using TradingConstants for *;
 
     // 交易对信息
     struct TradingPair {
@@ -194,28 +188,30 @@ contract Account {
         if (isAsk) {
             // 卖单：锁定基础代币
             tokenToLock = pair.baseToken;
-            // amount 包含精度，真实数量 = amount / AMOUNT_DECIMALS
+            // amount 包含精度，真实数量 = amount / TradingConstants.AMOUNT_DECIMALS
             // 需要锁定的代币数量（最小单位）= 真实数量 * 10^baseDecimals
             uint8 baseDecimals = IERC20(pair.baseToken).decimals();
-            amountToLock = (amount * (10 ** baseDecimals)) / AMOUNT_DECIMALS;
+            amountToLock = (amount * (10 ** baseDecimals)) / TradingConstants.AMOUNT_DECIMALS;
         } else {
             // 买单：锁定计价代币（包含交易费用）
             tokenToLock = pair.quoteToken;
-            if (price == 0) {
-                // 市价买单：不预先锁定，在执行时从可用余额扣除
-                // 只需检查用户有可用余额即可（粗略检查）
-                emit FundsLocked(user, tokenToLock, 0, orderId);
-                return;
-            }
-            // 限价买单计算：
-            // 真实价格 = price / PRICE_DECIMALS
-            // 真实数量 = amount / AMOUNT_DECIMALS
-            // 需要的计价代币（完整单位）= 真实价格 × 真实数量 = (price × amount) / (PRICE_DECIMALS × AMOUNT_DECIMALS)
-            // 需要的计价代币（最小单位）= 上述结果 × 10^quoteDecimals
             uint8 quoteDecimals = IERC20(pair.quoteToken).decimals();
-            uint256 baseQuoteAmount = (price * amount * (10 ** quoteDecimals)) / (PRICE_DECIMALS * AMOUNT_DECIMALS);
-            // 买单需要额外锁定 0.1% 的交易费用
-            amountToLock = (baseQuoteAmount * (FEE_BASE + FEE_RATE)) / FEE_BASE;
+            if (price == 0) {
+                // 市价买单：amount表示要花费的计价代币数量（包含精度）
+                // 需要锁定的代币数量（最小单位）= amount * 10^quoteDecimals / TradingConstants.AMOUNT_DECIMALS
+                // 买单需要额外锁定 0.1% 的交易费用
+                uint256 baseQuoteAmount = (amount * (10 ** quoteDecimals)) / TradingConstants.AMOUNT_DECIMALS;
+                amountToLock = (baseQuoteAmount * (TradingConstants.FEE_BASE + TradingConstants.FEE_RATE)) / TradingConstants.FEE_BASE;
+            } else {
+                // 限价买单计算：
+                // 真实价格 = price / TradingConstants.PRICE_DECIMALS
+                // 真实数量 = amount / TradingConstants.AMOUNT_DECIMALS
+                // 需要的计价代币（完整单位）= 真实价格 × 真实数量 = (price × amount) / (TradingConstants.PRICE_DECIMALS × TradingConstants.AMOUNT_DECIMALS)
+                // 需要的计价代币（最小单位）= 上述结果 × 10^quoteDecimals
+                uint256 baseQuoteAmount = (price * amount * (10 ** quoteDecimals)) / (TradingConstants.PRICE_DECIMALS * TradingConstants.AMOUNT_DECIMALS);
+                // 买单需要额外锁定 0.1% 的交易费用
+                amountToLock = (baseQuoteAmount * (TradingConstants.FEE_BASE + TradingConstants.FEE_RATE)) / TradingConstants.FEE_BASE;
+            }
         }
 
         // 检查可用余额
@@ -260,19 +256,22 @@ contract Account {
             // 卖单：解锁基础代币
             tokenToUnlock = pair.baseToken;
             uint8 baseDecimals = IERC20(pair.baseToken).decimals();
-            amountToUnlock = (amount * (10 ** baseDecimals)) / AMOUNT_DECIMALS;
+            amountToUnlock = (amount * (10 ** baseDecimals)) / TradingConstants.AMOUNT_DECIMALS;
         } else {
             // 买单：解锁计价代币（包含预锁定的交易费用）
             tokenToUnlock = pair.quoteToken;
-            if (price == 0) {
-                // 市价买单：没有预先锁定，无需解锁
-                emit FundsUnlocked(user, tokenToUnlock, 0, orderId);
-                return;
-            }
             uint8 quoteDecimals = IERC20(pair.quoteToken).decimals();
-            uint256 baseQuoteAmount = (price * amount * (10 ** quoteDecimals)) / (PRICE_DECIMALS * AMOUNT_DECIMALS);
-            // 解锁时也需要包含预锁定的交易费用
-            amountToUnlock = (baseQuoteAmount * (FEE_BASE + FEE_RATE)) / FEE_BASE;
+            if (price == 0) {
+                // 市价买单：amount表示要退还的计价代币数量（包含精度）
+                // 需要解锁的代币数量（最小单位）= amount * 10^quoteDecimals / TradingConstants.AMOUNT_DECIMALS
+                // 包含交易费用
+                uint256 baseQuoteAmount = (amount * (10 ** quoteDecimals)) / TradingConstants.AMOUNT_DECIMALS;
+                amountToUnlock = (baseQuoteAmount * (TradingConstants.FEE_BASE + TradingConstants.FEE_RATE)) / TradingConstants.FEE_BASE;
+            } else {
+                uint256 baseQuoteAmount = (price * amount * (10 ** quoteDecimals)) / (TradingConstants.PRICE_DECIMALS * TradingConstants.AMOUNT_DECIMALS);
+                // 解锁时也需要包含预锁定的交易费用
+                amountToUnlock = (baseQuoteAmount * (TradingConstants.FEE_BASE + TradingConstants.FEE_RATE)) / TradingConstants.FEE_BASE;
+            }
         }
 
         // 检查锁定余额
@@ -317,12 +316,12 @@ contract Account {
         uint8 quoteDecimals = IERC20(pair.quoteToken).decimals();
 
         // 计算实际的代币数量（最小单位）
-        uint256 baseAmount = (amount * (10 ** baseDecimals)) / AMOUNT_DECIMALS;
-        uint256 quoteAmount = (price * amount * (10 ** quoteDecimals)) / (PRICE_DECIMALS * AMOUNT_DECIMALS);
+        uint256 baseAmount = (amount * (10 ** baseDecimals)) / TradingConstants.AMOUNT_DECIMALS;
+        uint256 quoteAmount = (price * amount * (10 ** quoteDecimals)) / (TradingConstants.PRICE_DECIMALS * TradingConstants.AMOUNT_DECIMALS);
 
         // 计算理想的费用（各0.1%）
-        uint256 idealBuyerFee = (quoteAmount * FEE_RATE) / FEE_BASE;
-        uint256 idealSellerFee = (quoteAmount * FEE_RATE) / FEE_BASE;
+        uint256 idealBuyerFee = (quoteAmount * TradingConstants.FEE_RATE) / TradingConstants.FEE_BASE;
+        uint256 idealSellerFee = (quoteAmount * TradingConstants.FEE_RATE) / TradingConstants.FEE_BASE;
 
         // 实际收取的费用（可能因余额不足而减少）
         uint256 actualBuyerFee;
@@ -330,18 +329,14 @@ contract Account {
 
         // 买方：扣除计价代币，增加基础代币
         if (isBidMarketOrder) {
-            // 市价买单：从可用余额扣除（未预先锁定）
-            uint256 buyerAvailable = balances[buyer][pair.quoteToken].available;
-
-            // 首先确保买方有足够的 quoteAmount（这是必须的）
-            require(buyerAvailable >= quoteAmount, "Buyer insufficient available quote token");
-
-            // 计算买方可以支付的费用（余额 - quoteAmount，但不超过理想费用）
-            uint256 buyerRemainingForFee = buyerAvailable - quoteAmount;
-            actualBuyerFee = buyerRemainingForFee >= idealBuyerFee ? idealBuyerFee : buyerRemainingForFee;
-
-            // 扣除买方的 quoteAmount + 实际费用
-            balances[buyer][pair.quoteToken].available -= (quoteAmount + actualBuyerFee);
+            // 市价买单：从锁定余额扣除（现在已预先锁定）
+            uint256 buyerTotalPay = quoteAmount + idealBuyerFee;
+            require(
+                balances[buyer][pair.quoteToken].locked >= buyerTotalPay,
+                "Buyer insufficient locked quote token"
+            );
+            balances[buyer][pair.quoteToken].locked -= buyerTotalPay;
+            actualBuyerFee = idealBuyerFee;
         } else {
             // 限价买单：从锁定余额扣除（已预先锁定，包含费用）
             uint256 buyerTotalPay = quoteAmount + idealBuyerFee;
@@ -440,18 +435,20 @@ contract Account {
         if (isAsk) {
             // 卖单：需要基础代币
             uint8 baseDecimals = IERC20(pair.baseToken).decimals();
-            uint256 requiredBase = (amount * (10 ** baseDecimals)) / AMOUNT_DECIMALS;
+            uint256 requiredBase = (amount * (10 ** baseDecimals)) / TradingConstants.AMOUNT_DECIMALS;
             return balances[user][pair.baseToken].available >= requiredBase;
         } else {
             // 买单：需要计价代币（包含0.1%交易费用）
-            if (price == 0) {
-                // 市价买单：无法预先计算所需金额，只检查用户是否有可用余额
-                return balances[user][pair.quoteToken].available > 0;
-            }
             uint8 quoteDecimals = IERC20(pair.quoteToken).decimals();
-            uint256 baseQuote = (price * amount * (10 ** quoteDecimals)) / (PRICE_DECIMALS * AMOUNT_DECIMALS);
+            uint256 baseQuote;
+            if (price == 0) {
+                // 市价买单：amount表示要花费的计价代币数量（包含精度）
+                baseQuote = (amount * (10 ** quoteDecimals)) / TradingConstants.AMOUNT_DECIMALS;
+            } else {
+                baseQuote = (price * amount * (10 ** quoteDecimals)) / (TradingConstants.PRICE_DECIMALS * TradingConstants.AMOUNT_DECIMALS);
+            }
             // 包含交易费用
-            uint256 requiredQuote = (baseQuote * (FEE_BASE + FEE_RATE)) / FEE_BASE;
+            uint256 requiredQuote = (baseQuote * (TradingConstants.FEE_BASE + TradingConstants.FEE_RATE)) / TradingConstants.FEE_BASE;
             return balances[user][pair.quoteToken].available >= requiredQuote;
         }
     }

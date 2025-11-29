@@ -309,10 +309,12 @@ contract AutoMatchingTest is Test {
         console.log("Alice placed limit sell: 5 WETH @ 2000 USDC");
 
         // Bob 下市价买单（应该立即与 Alice 的限价单匹配）
+        // 新语义：市价买单的 amount 是要花费的 quote tokens (USDC)
+        // 要买 3 WETH @ 2000 USDC/WETH = 6000 USDC
         vm.prank(bob);
-        (, uint256 marketBuy) = sequencer.placeMarketOrder(pairId, false, 3 * 10**8);  // Market buy 3 WETH
+        (, uint256 marketBuy) = sequencer.placeMarketOrder(pairId, false, 6000 * 10**8);  // Spend 6000 USDC
 
-        console.log("Bob placed market buy: 3 WETH");
+        console.log("Bob placed market buy: spend 6000 USDC (to buy ~3 WETH @ 2000)");
         console.log("  Expected: Should immediately match 3 WETH from Alice's sell order");
 
         vm.recordLogs();

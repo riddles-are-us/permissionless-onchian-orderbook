@@ -17,6 +17,9 @@ use tracing::debug;
 /// 常量：空节点
 const EMPTY: U256 = U256::zero();
 
+/// 常量：价格精度 (10^8) - 对应 TradingConstants.PRICE_DECIMALS
+const PRICE_DECIMALS: U256 = U256([100_000_000, 0, 0, 0]);
+
 /// 模拟订单 - 对应链上 Order 结构
 #[derive(Debug, Clone)]
 pub struct SimOrder {
@@ -869,6 +872,10 @@ impl OrderBookSimulator {
 
     /// 执行市价单与限价单的交易
     /// is_market_ask: true 表示市价卖单与限价买单撮合，false 表示市价买单与限价卖单撮合
+    ///
+    /// 重要语义说明：
+    /// - 市价卖单 (is_market_ask=true): amount 表示要卖出的基础代币数量
+    /// - 市价买单 (is_market_ask=false): amount 表示要花费的计价代币数量
     fn execute_market_trade(
         &mut self,
         market_order_id: U256,
@@ -876,8 +883,8 @@ impl OrderBookSimulator {
         is_market_ask: bool,
     ) -> bool {
         // 获取市价单信息
-        let market_remaining = if let Some(order) = self.orders.get(&market_order_id) {
-            order.amount - order.filled_amount
+        let (market_amount, market_filled) = if let Some(order) = self.orders.get(&market_order_id) {
+            (order.amount, order.filled_amount)
         } else {
             return false;
         };
@@ -889,23 +896,43 @@ impl OrderBookSimulator {
             return false;
         };
 
-        // 计算成交数量
-        let trade_amount = market_remaining.min(limit_remaining);
+        // 计算成交数量（以 base tokens 为单位）
+        let trade_amount = if is_market_ask {
+            // 市价卖单：amount 是 base tokens，直接比较
+            let market_remaining = market_amount - market_filled;
+            market_remaining.min(limit_remaining)
+        } else {
+            // 市价买单：amount 是 quote tokens（计价代币），需要转换成 base tokens
+            // quote_remaining = 剩余可花费的计价代币数量
+            let quote_remaining = market_amount - market_filled;
+            // base = quote * PRICE_DECIMALS / price
+            let market_remaining_base = quote_remaining * PRICE_DECIMALS / limit_price_level;
+            market_remaining_base.min(limit_remaining)
+        };
+
         if trade_amount.is_zero() {
             return false;
         }
 
         debug!(
-            "Market trade: market_order={}, limit_order={}, amount={}",
-            market_order_id, limit_order_id, trade_amount
+            "Market trade: market_order={}, limit_order={}, trade_amount={}, is_market_ask={}",
+            market_order_id, limit_order_id, trade_amount, is_market_ask
         );
 
         // 更新市价单已成交数量
         if let Some(order) = self.orders.get_mut(&market_order_id) {
-            order.filled_amount = order.filled_amount + trade_amount;
+            if is_market_ask {
+                // 市价卖单：filled_amount 是 base tokens
+                order.filled_amount = order.filled_amount + trade_amount;
+            } else {
+                // 市价买单：filled_amount 是 quote tokens（追踪花费的计价代币）
+                // quote_spent = trade_amount * price / PRICE_DECIMALS
+                let quote_spent = trade_amount * limit_price_level / PRICE_DECIMALS;
+                order.filled_amount = order.filled_amount + quote_spent;
+            }
         }
 
-        // 更新限价单已成交数量
+        // 更新限价单已成交数量 (always in base tokens)
         if let Some(order) = self.orders.get_mut(&limit_order_id) {
             order.filled_amount = order.filled_amount + trade_amount;
         }
@@ -1175,21 +1202,31 @@ mod tests {
     }
 
     // ============ 市价单测试 ============
+    //
+    // 注意：市价买单的 amount 表示要花费的计价代币数量（quote tokens）
+    // 市价卖单的 amount 表示要卖出的基础代币数量（base tokens）
+    //
+    // 使用 price = PRICE_DECIMALS (100_000_000) 时，quote_amount = base_amount
+    // 这样可以简化测试逻辑
 
     #[test]
     fn test_market_order_insertion() {
         let mut sim = OrderBookSimulator::new();
 
-        // 插入一个限价卖单: price=100, amount=10
-        sim.simulate_insert_order(U256::from(1), U256::from(100), U256::from(10), true);
+        // 使用 price = PRICE_DECIMALS，这样 quote_amount = base_amount
+        let price = PRICE_DECIMALS;
 
-        // 插入一个市价买单，应该立即与卖单撮合
+        // 插入一个限价卖单: price=PRICE_DECIMALS, amount=10
+        sim.simulate_insert_order(U256::from(1), price, U256::from(10), true);
+
+        // 插入一个市价买单，花费 5 quote tokens
+        // 由于 price = PRICE_DECIMALS，5 quote = 5 base
         sim.simulate_insert_market_order(U256::from(2), U256::from(5), false);
 
         // 市价买单完全成交，不应该在订单簿中
         assert!(!sim.orders.contains_key(&U256::from(2)));
 
-        // 限价卖单部分成交
+        // 限价卖单部分成交（5 base tokens）
         let ask_order = sim.orders.get(&U256::from(1)).unwrap();
         assert_eq!(ask_order.filled_amount, U256::from(5));
     }
@@ -1198,10 +1235,13 @@ mod tests {
     fn test_market_order_fully_matches_limit() {
         let mut sim = OrderBookSimulator::new();
 
-        // 插入限价卖单: price=100, amount=10
-        sim.simulate_insert_order(U256::from(1), U256::from(100), U256::from(10), true);
+        // 使用 price = PRICE_DECIMALS，这样 quote_amount = base_amount
+        let price = PRICE_DECIMALS;
 
-        // 插入市价买单，amount=10，完全撮合
+        // 插入限价卖单: price=PRICE_DECIMALS, amount=10
+        sim.simulate_insert_order(U256::from(1), price, U256::from(10), true);
+
+        // 插入市价买单，花费 10 quote tokens = 10 base tokens
         sim.simulate_insert_market_order(U256::from(2), U256::from(10), false);
 
         // 两个订单都应该被移除
@@ -1216,16 +1256,21 @@ mod tests {
     fn test_market_order_partial_fill() {
         let mut sim = OrderBookSimulator::new();
 
-        // 插入限价卖单: price=100, amount=5
-        sim.simulate_insert_order(U256::from(1), U256::from(100), U256::from(5), true);
+        // 使用 price = PRICE_DECIMALS，这样 quote_amount = base_amount
+        let price = PRICE_DECIMALS;
 
-        // 插入市价买单，amount=10，部分成交
+        // 插入限价卖单: price=PRICE_DECIMALS, amount=5
+        sim.simulate_insert_order(U256::from(1), price, U256::from(5), true);
+
+        // 插入市价买单，花费 10 quote tokens
+        // 但只有 5 base tokens 可买，所以只花费 5 quote tokens
         sim.simulate_insert_market_order(U256::from(2), U256::from(10), false);
 
         // 限价卖单完全成交，被移除
         assert!(!sim.orders.contains_key(&U256::from(1)));
 
         // 市价买单部分成交，保留在队列中
+        // filled_amount 是花费的 quote tokens = 5
         let market_order = sim.orders.get(&U256::from(2)).unwrap();
         assert_eq!(market_order.filled_amount, U256::from(5));
         assert_eq!(market_order.is_market_order, true);
@@ -1259,37 +1304,42 @@ mod tests {
         // 场景：批处理中市价单在限价单之前，市价单的撮合会影响后续限价单的 insertAfterPrice
         //
         // 初始状态：
-        // Asks: [100, 101, 102]
+        // Asks: [PRICE_DECIMALS, PRICE_DECIMALS+1, PRICE_DECIMALS+2]
         //
         // 批处理：
-        // 1. Market Buy (amount=全部@100) - 会移除价格层 100
-        // 2. Limit Sell @ 100.5 - 应该 insertAfterPrice = 101（因为 100 已被移除）
+        // 1. Market Buy (花费 10 quote，购买 10 base @ PRICE_DECIMALS) - 会移除价格层
+        // 2. Limit Sell @ PRICE_DECIMALS - 应该 insertAfterPrice = 0（插入到头部）
+
+        let price_100 = PRICE_DECIMALS;
+        let price_101 = PRICE_DECIMALS + U256::from(1);
+        let price_102 = PRICE_DECIMALS + U256::from(2);
 
         // 设置初始订单簿
-        sim.simulate_insert_order(U256::from(1), U256::from(100), U256::from(10), true); // ask@100
-        sim.simulate_insert_order(U256::from(2), U256::from(101), U256::from(10), true); // ask@101
-        sim.simulate_insert_order(U256::from(3), U256::from(102), U256::from(10), true); // ask@102
+        sim.simulate_insert_order(U256::from(1), price_100, U256::from(10), true); // ask@PRICE_DECIMALS
+        sim.simulate_insert_order(U256::from(2), price_101, U256::from(10), true); // ask@PRICE_DECIMALS+1
+        sim.simulate_insert_order(U256::from(3), price_102, U256::from(10), true); // ask@PRICE_DECIMALS+2
 
         assert_eq!(sim.get_price_levels(true), vec![
-            U256::from(100),
-            U256::from(101),
-            U256::from(102),
+            price_100,
+            price_101,
+            price_102,
         ]);
 
-        // 市价买单，消耗掉价格层 100 的所有订单
+        // 市价买单，花费 10 quote tokens 消耗掉价格层的所有订单
+        // 由于 price = PRICE_DECIMALS，10 quote = 10 base
         sim.simulate_insert_market_order(U256::from(10), U256::from(10), false);
 
-        // 价格层 100 应该被移除
+        // 价格层 PRICE_DECIMALS 应该被移除
         assert_eq!(sim.get_price_levels(true), vec![
-            U256::from(101),
-            U256::from(102),
+            price_101,
+            price_102,
         ]);
 
-        // 现在插入限价卖单 @ 100（比 101 低）
+        // 现在插入限价卖单 @ PRICE_DECIMALS（比 PRICE_DECIMALS+1 低）
         // 应该 insertAfterPrice = 0（插入到头部）
         let insert_after = sim.simulate_insert_order(
             U256::from(11),
-            U256::from(100),
+            price_100,
             U256::from(10),
             true,
         );
@@ -1297,9 +1347,9 @@ mod tests {
 
         // 验证新状态
         assert_eq!(sim.get_price_levels(true), vec![
-            U256::from(100),
-            U256::from(101),
-            U256::from(102),
+            price_100,
+            price_101,
+            price_102,
         ]);
     }
 
@@ -1327,15 +1377,18 @@ mod tests {
     fn test_multiple_market_orders_match_one_limit() {
         let mut sim = OrderBookSimulator::new();
 
-        // 插入一个大额限价卖单
-        sim.simulate_insert_order(U256::from(1), U256::from(100), U256::from(30), true);
+        // 使用 price = PRICE_DECIMALS，这样 quote_amount = base_amount
+        let price = PRICE_DECIMALS;
 
-        // 插入多个市价买单
+        // 插入一个大额限价卖单: 30 base tokens
+        sim.simulate_insert_order(U256::from(1), price, U256::from(30), true);
+
+        // 插入多个市价买单，每个花费 10 quote tokens = 10 base tokens
         sim.simulate_insert_market_order(U256::from(10), U256::from(10), false);
         sim.simulate_insert_market_order(U256::from(11), U256::from(10), false);
         sim.simulate_insert_market_order(U256::from(12), U256::from(10), false);
 
-        // 所有市价买单应该已成交
+        // 所有市价买单应该已成交（共消费 30 base tokens）
         assert!(!sim.orders.contains_key(&U256::from(10)));
         assert!(!sim.orders.contains_key(&U256::from(11)));
         assert!(!sim.orders.contains_key(&U256::from(12)));
