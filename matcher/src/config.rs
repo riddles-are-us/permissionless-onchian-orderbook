@@ -26,6 +26,8 @@ pub struct ContractsConfig {
     pub sequencer: String,
     pub orderbook: String,
     pub account: String,
+    #[serde(default)]
+    pub trading_pair: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,44 +49,61 @@ pub struct ExecutorConfig {
     pub gas_limit: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct MongoDbConfig {
+    #[serde(default = "default_mongodb_uri")]
     pub uri: String,
+    #[serde(default = "default_mongodb_database")]
     pub database: String,
+    #[serde(default)]
     pub enabled: bool,
 }
 
-impl Default for MongoDbConfig {
-    fn default() -> Self {
-        Self {
-            uri: "mongodb://localhost:27017".to_string(),
-            database: "orderbook".to_string(),
-            enabled: false,
-        }
-    }
+fn default_mongodb_uri() -> String {
+    "mongodb://localhost:27017".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+fn default_mongodb_database() -> String {
+    "orderbook".to_string()
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct ApiConfig {
+    #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_api_host")]
     pub host: String,
+    #[serde(default = "default_api_port")]
     pub port: u16,
 }
 
-impl Default for ApiConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-        }
-    }
+fn default_api_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_api_port() -> u16 {
+    8080
 }
 
 impl Config {
     pub fn from_file(path: &str) -> Result<Self> {
         let content = fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)?;
+
+        // 从 deployments.json 读取 trading_pair (如果未配置)
+        if config.contracts.trading_pair.is_empty() {
+            if let Ok(deploy_content) = fs::read_to_string("../deployments.json") {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&deploy_content) {
+                    if let Some(pair_id) = json.get("pairId").and_then(|v| v.as_str()) {
+                        config.contracts.trading_pair = pair_id.to_string();
+                    }
+                }
+            }
+        }
+
         Ok(config)
     }
 }

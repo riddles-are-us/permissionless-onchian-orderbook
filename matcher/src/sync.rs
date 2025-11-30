@@ -163,30 +163,23 @@ impl StateSynchronizer {
     async fn sync_orderbook_state(&self) -> Result<()> {
         debug!("Syncing OrderBook state to GlobalState...");
 
-        // 从 deployments.json 读取交易对
-        let mut trading_pairs: Vec<[u8; 32]> = Vec::new();
+        // 从配置中读取交易对
+        let pair_id = &self.config.contracts.trading_pair;
+        if pair_id.is_empty() {
+            warn!("No trading pair configured");
+            return Ok(());
+        }
 
-        if let Ok(content) = std::fs::read_to_string("../deployments.json") {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(pair_id) = json.get("pairId").and_then(|v| v.as_str()) {
-                    if let Ok(bytes) = hex::decode(pair_id.trim_start_matches("0x")) {
-                        if bytes.len() == 32 {
-                            let mut arr = [0u8; 32];
-                            arr.copy_from_slice(&bytes);
-                            trading_pairs.push(arr);
-                            debug!("Loaded trading pair from deployments.json: {}", pair_id);
-                        }
-                    }
-                }
+        if let Ok(bytes) = hex::decode(pair_id.trim_start_matches("0x")) {
+            if bytes.len() == 32 {
+                let mut trading_pair = [0u8; 32];
+                trading_pair.copy_from_slice(&bytes);
+                self.sync_trading_pair_orderbook(&trading_pair).await?;
+            } else {
+                warn!("Invalid trading pair length: {}", bytes.len());
             }
-        }
-
-        if trading_pairs.is_empty() {
-            warn!("No trading pairs found in deployments.json");
-        }
-
-        for trading_pair in trading_pairs {
-            self.sync_trading_pair_orderbook(&trading_pair).await?;
+        } else {
+            warn!("Failed to decode trading pair: {}", pair_id);
         }
 
         Ok(())

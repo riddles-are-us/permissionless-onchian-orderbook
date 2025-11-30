@@ -32,6 +32,10 @@ struct Args {
     /// 起始区块号（覆盖配置文件）
     #[arg(short, long)]
     start_block: Option<u64>,
+
+    /// 禁用 RPC/API 服务器（用于纯撮合节点）
+    #[arg(long)]
+    disable_rpc: bool,
 }
 
 #[tokio::main]
@@ -95,8 +99,11 @@ async fn main() -> Result<()> {
     // 创建匹配引擎（从 GlobalState 获取订单簿状态）
     let matcher = MatchingEngine::new(config.clone(), state).await?;
 
-    // 启动 API 服务器（如果启用）
-    let api_handle = if config.api.enabled {
+    // 启动 API 服务器（如果启用且未禁用 RPC）
+    let api_handle = if args.disable_rpc {
+        info!("🌐 RPC/API server disabled (--disable-rpc)");
+        None
+    } else if config.api.enabled {
         if let Some(ref storage) = storage {
             let api_config = config.api.clone();
             let api_storage = storage.clone();
