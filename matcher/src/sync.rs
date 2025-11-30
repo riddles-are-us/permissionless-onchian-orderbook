@@ -2,8 +2,10 @@ use crate::config::Config;
 use crate::contracts::{OrderBook, Sequencer};
 use crate::orderbook_simulator::{SimOrder, SimPriceLevel};
 use crate::state::GlobalState;
+use crate::storage::{MongoStorage, OrderStatus, StoredOrder, StoredOrderType};
 use crate::types::*;
 use anyhow::{Context, Result};
+use chrono::Utc;
 use ethers::prelude::*;
 use futures::stream::StreamExt;
 use std::sync::Arc;
@@ -16,10 +18,11 @@ pub struct StateSynchronizer {
     sequencer: Sequencer<Provider<Ws>>,
     orderbook: OrderBook<Provider<Ws>>,
     synced_block: u64,
+    storage: Option<MongoStorage>,
 }
 
 impl StateSynchronizer {
-    pub async fn new(config: Config) -> Result<Self> {
+    pub async fn new(config: Config, storage: Option<MongoStorage>) -> Result<Self> {
         // 连接到节点
         let ws = Ws::connect(&config.network.rpc_url)
             .await
@@ -40,7 +43,13 @@ impl StateSynchronizer {
             sequencer,
             orderbook,
             synced_block: 0,
+            storage,
         })
+    }
+
+    /// 获取 storage 的引用
+    pub fn storage(&self) -> Option<&MongoStorage> {
+        self.storage.as_ref()
     }
 
     pub fn state(&self) -> GlobalState {
@@ -154,13 +163,27 @@ impl StateSynchronizer {
     async fn sync_orderbook_state(&self) -> Result<()> {
         debug!("Syncing OrderBook state to GlobalState...");
 
-        // 从 state 获取已知的交易对（通过请求中的 trading_pair）
-        let trading_pairs: Vec<[u8; 32]> = self.state.queued_requests
-            .iter()
-            .map(|r| r.trading_pair)
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
+        // 从 deployments.json 读取交易对
+        let mut trading_pairs: Vec<[u8; 32]> = Vec::new();
+
+        if let Ok(content) = std::fs::read_to_string("../deployments.json") {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(pair_id) = json.get("pairId").and_then(|v| v.as_str()) {
+                    if let Ok(bytes) = hex::decode(pair_id.trim_start_matches("0x")) {
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&bytes);
+                            trading_pairs.push(arr);
+                            debug!("Loaded trading pair from deployments.json: {}", pair_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        if trading_pairs.is_empty() {
+            warn!("No trading pairs found in deployments.json");
+        }
 
         for trading_pair in trading_pairs {
             self.sync_trading_pair_orderbook(&trading_pair).await?;
@@ -201,16 +224,16 @@ impl StateSynchronizer {
         }
 
         // 同步 Ask 价格层级
-        self.sync_price_levels(ask_head, true).await?;
+        self.sync_price_levels(ask_head, true, trading_pair).await?;
 
         // 同步 Bid 价格层级
-        self.sync_price_levels(bid_head, false).await?;
+        self.sync_price_levels(bid_head, false, trading_pair).await?;
 
         Ok(())
     }
 
     /// 同步价格层级链表到 GlobalState
-    async fn sync_price_levels(&self, head_price: U256, is_ask: bool) -> Result<()> {
+    async fn sync_price_levels(&self, head_price: U256, is_ask: bool, trading_pair: &[u8; 32]) -> Result<()> {
         let mut current_price = head_price;
         let mut level_count = 0;
         let mut order_count = 0;
@@ -229,7 +252,7 @@ impl StateSynchronizer {
             };
 
             // 同步该价格层级的订单
-            let orders_synced = self.sync_orders_at_price_level(&sim_level, is_ask).await?;
+            let orders_synced = self.sync_orders_at_price_level(&sim_level, is_ask, trading_pair).await?;
             order_count += orders_synced;
 
             // 添加到 GlobalState.orderbook
@@ -255,7 +278,7 @@ impl StateSynchronizer {
     }
 
     /// 同步指定价格层级的所有订单到 GlobalState
-    async fn sync_orders_at_price_level(&self, level: &SimPriceLevel, is_ask: bool) -> Result<usize> {
+    async fn sync_orders_at_price_level(&self, level: &SimPriceLevel, is_ask: bool, trading_pair: &[u8; 32]) -> Result<usize> {
         let mut current_order_id = level.head_order_id;
         let mut count = 0;
 
@@ -275,11 +298,47 @@ impl StateSynchronizer {
             };
 
             let next_id = sim_order.next_order_id;
+            let trader = order_data.1; // trader address
 
             // 添加到 GlobalState.orderbook
             {
                 let mut orderbook = self.state.orderbook.write();
-                orderbook.add_existing_order(sim_order);
+                orderbook.add_existing_order(sim_order.clone());
+            }
+
+            // 保存到 MongoDB
+            if let Some(ref storage) = self.storage {
+                let status = if sim_order.filled_amount.is_zero() {
+                    OrderStatus::Active
+                } else if sim_order.filled_amount < sim_order.amount {
+                    OrderStatus::PartiallyFilled
+                } else {
+                    OrderStatus::Filled
+                };
+
+                let stored_order = StoredOrder {
+                    order_id: current_order_id.to_string(),
+                    trading_pair: format!("0x{}", hex::encode(trading_pair)),
+                    trader: format!("{:?}", trader).to_lowercase(),
+                    order_type: if sim_order.is_market_order {
+                        StoredOrderType::Market
+                    } else {
+                        StoredOrderType::Limit
+                    },
+                    is_ask,
+                    price: level.price.to_string(),
+                    amount: sim_order.amount.to_string(),
+                    filled_amount: sim_order.filled_amount.to_string(),
+                    status,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    block_number: self.synced_block,
+                    tx_hash: None,
+                };
+
+                if let Err(e) = storage.upsert_order(&stored_order).await {
+                    warn!("Failed to save order to MongoDB: {}", e);
+                }
             }
 
             count += 1;
@@ -299,9 +358,10 @@ impl StateSynchronizer {
         let orderbook_watcher = {
             let orderbook = self.orderbook.clone();
             let state = self.state.clone();
+            let storage = self.storage.clone();
 
             tokio::spawn(async move {
-                Self::watch_orderbook_events(orderbook, state, from_block).await
+                Self::watch_orderbook_events(orderbook, state, storage, from_block).await
             })
         };
 
@@ -309,9 +369,10 @@ impl StateSynchronizer {
         let sequencer_watcher = {
             let sequencer = self.sequencer.clone();
             let state = self.state.clone();
+            let storage = self.storage.clone();
 
             tokio::spawn(async move {
-                Self::watch_sequencer_events(sequencer, state, from_block).await
+                Self::watch_sequencer_events(sequencer, state, storage, from_block).await
             })
         };
 
@@ -340,6 +401,7 @@ impl StateSynchronizer {
     async fn watch_orderbook_events(
         orderbook: OrderBook<Provider<Ws>>,
         state: GlobalState,
+        storage: Option<MongoStorage>,
         from_block: u64,
     ) -> Result<()> {
         use crate::contracts::order_book::*;
@@ -596,14 +658,32 @@ impl StateSynchronizer {
                             );
 
                             // 更新 GlobalState.orderbook 中的订单状态
-                            let mut orderbook = state.orderbook.write();
-                            if filled.is_fully_filled {
-                                // 移除完全成交的订单
-                                orderbook.orders.remove(&filled.order_id);
-                            } else {
-                                // 更新部分成交
-                                if let Some(order) = orderbook.orders.get_mut(&filled.order_id) {
-                                    order.filled_amount = filled.filled_amount;
+                            {
+                                let mut orderbook = state.orderbook.write();
+                                if filled.is_fully_filled {
+                                    // 移除完全成交的订单
+                                    orderbook.orders.remove(&filled.order_id);
+                                } else {
+                                    // 更新部分成交
+                                    if let Some(order) = orderbook.orders.get_mut(&filled.order_id) {
+                                        order.filled_amount = filled.filled_amount;
+                                    }
+                                }
+                            } // 释放 write guard
+
+                            // 更新 MongoDB 中的订单状态
+                            if let Some(ref storage) = storage {
+                                let status = if filled.is_fully_filled {
+                                    OrderStatus::Filled
+                                } else {
+                                    OrderStatus::PartiallyFilled
+                                };
+                                if let Err(e) = storage.update_order_status(
+                                    &filled.order_id.to_string(),
+                                    status,
+                                    Some(&filled.filled_amount.to_string()),
+                                ).await {
+                                    warn!("Failed to update order in MongoDB: {}", e);
                                 }
                             }
                         }
@@ -616,8 +696,21 @@ impl StateSynchronizer {
                         Ok(removed) => {
                             info!("🗑️  OrderRemoved: order={}", removed.order_id);
                             // 从 GlobalState.orderbook 中移除订单
-                            let mut orderbook = state.orderbook.write();
-                            orderbook.orders.remove(&removed.order_id);
+                            {
+                                let mut orderbook = state.orderbook.write();
+                                orderbook.orders.remove(&removed.order_id);
+                            } // 释放 write guard
+
+                            // 更新 MongoDB 中的订单状态为已取消
+                            if let Some(ref storage) = storage {
+                                if let Err(e) = storage.update_order_status(
+                                    &removed.order_id.to_string(),
+                                    OrderStatus::Cancelled,
+                                    None,
+                                ).await {
+                                    warn!("Failed to update order in MongoDB: {}", e);
+                                }
+                            }
                         }
                         Err(e) => warn!("Error receiving order removed event: {}", e),
                     }
@@ -648,6 +741,7 @@ impl StateSynchronizer {
     async fn watch_sequencer_events(
         sequencer: Sequencer<Provider<Ws>>,
         state: GlobalState,
+        storage: Option<MongoStorage>,
         from_block: u64,
     ) -> Result<()> {
         use crate::contracts::sequencer::*;
@@ -678,16 +772,18 @@ impl StateSynchronizer {
                             );
 
                             // 创建请求并添加到 GlobalState
+                            let order_type = match place_order.order_type {
+                                0 => OrderType::Limit,
+                                1 => OrderType::Market,
+                                _ => OrderType::Limit,
+                            };
+
                             let request = QueuedRequest {
                                 request_id: place_order.request_id,
                                 request_type: RequestType::PlaceOrder,
                                 trading_pair: place_order.trading_pair,
                                 trader: place_order.trader,
-                                order_type: match place_order.order_type {
-                                    0 => OrderType::Limit,
-                                    1 => OrderType::Market,
-                                    _ => OrderType::Limit,
-                                },
+                                order_type: order_type.clone(),
                                 is_ask: place_order.is_ask,
                                 price: place_order.price,
                                 amount: place_order.amount,
@@ -697,6 +793,32 @@ impl StateSynchronizer {
 
                             state.add_request(request);
                             state.update_queue_head(place_order.request_id);
+
+                            // 保存订单到 MongoDB
+                            if let Some(ref storage) = storage {
+                                let stored_order = StoredOrder {
+                                    order_id: place_order.request_id.to_string(),
+                                    trading_pair: format!("0x{}", hex::encode(place_order.trading_pair)),
+                                    trader: format!("{:?}", place_order.trader).to_lowercase(),
+                                    order_type: match order_type {
+                                        OrderType::Limit => StoredOrderType::Limit,
+                                        OrderType::Market => StoredOrderType::Market,
+                                    },
+                                    is_ask: place_order.is_ask,
+                                    price: place_order.price.to_string(),
+                                    amount: place_order.amount.to_string(),
+                                    filled_amount: "0".to_string(),
+                                    status: OrderStatus::Pending,
+                                    created_at: Utc::now(),
+                                    updated_at: Utc::now(),
+                                    block_number: from_block,
+                                    tx_hash: None,
+                                };
+
+                                if let Err(e) = storage.upsert_order(&stored_order).await {
+                                    warn!("Failed to save order to MongoDB: {}", e);
+                                }
+                            }
                         }
                         Err(e) => warn!("Error receiving PlaceOrderRequested event: {}", e),
                     }
