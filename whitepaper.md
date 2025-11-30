@@ -23,24 +23,49 @@ This paper presents a solution that revives the on-chain order book model by sys
 Our exchange is a hybrid system composed of three core on-chain smart contracts and a decentralized network of off-chain agents, known as **Matchers**.
 
 ```text
-                               +--------------------------+
-                               |                          |
-                           +-->+   Matcher Network        +<--+
-                           |   | (Permissionless, Off-Chain)|   |
-                           |   +--------------------------+   |
-                           |              ^  |                 |
-(4) Read Events &         (5) Submit      |  | (6) Read State   |
-    Calculate Positions      Batch Tx     |  |     via REST API |
-                           |              |  v                 |
-+----------------------+   |   +--------------------------+   |   +----------------------+
-|                      |   |   |                          |   |   |                      |
-| User / Trader        +<----->+    Ethereum Blockchain     +------>+ Frontend Application |
-|                      |       |                          |       | (React DApp)         |
-+----------------------+       | [Sequencer.sol]          |       +----------------------+
-  ^  |                         | [OrderBook.sol]          |                 ^  |
-  |  | (1) Sign Tx             | [Account.sol]            |                 |  | (2) Submit Tx
-  +--+-------------------------+--------------------------+-----------------+--+
-     (3) Tx Confirmation
++-------+       (1) placeLimitOrder()       +-----------------+
+| User  | ------------------------------->  | Sequencer.sol   |
++-------+                                   | (FIFO Queue)    |
+                                            +-----------------+
+                                                      | (2) Emits `NewRequest` Event
+                                                      |
+                                                      v
++---------------------------------------------------------------------------------+
+| OFF-CHAIN: Permissionless Matcher Network (Multiple competing nodes)            |
+|                                                                                 |
+|  +---------------------------+      +---------------------------+               |
+|  | Matcher 1 (calculates)    |      | Matcher 2 (calculates)    |      ...      |
+|  +---------------------------+      +---------------------------+               |
+|               | (One successful Matcher proceeds)                               |
+|               |                                                                 |
+| (3) Submits transaction with [Order Data + Positional Hint]                     |
+|               |                                                                 |
++---------------+-----------------------------------------------------------------+
+                |
+                v
++---------------------------------------------------------------------------------+
+| ON-CHAIN: Atomic Execution in OrderBook.sol & Account.sol                       |
+|                                                                                 |
+|   +--------------------------+      +--------------------------+                |
+|   | (4) VERIFY Position Hint |----->| (5) INSERT Order into    |                |
+|   | (Is hint correct?)       |      |     On-Chain Order Book  |                |
+|   +--------------------------+      +--------------------------+                |
+|                                                 |                               |
+|                                (6) Attempt ON-CHAIN MATCHING                    |
+|                                                 |                               |
+|                                                 v                               |
+|                                     +----------------------+                    |
+|                                     |  Match found? (Y/N)  |                    |
+|                                     +----------------------+                    |
+|                                                 | (If Yes)                      |
+|                                                 v                               |
+|                                     +-----------------------+                   |
+|                                     | Call Account.sol to   |                   |
+|                                     | SETTLE Funds          |                   |
+|                                     +-----------------------+                   |
+|                                                                                 |
++---------------------------------------------------------------------------------+
+
 ```
 
 ### **2.1 On-Chain Components**
