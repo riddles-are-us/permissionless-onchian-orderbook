@@ -143,6 +143,7 @@ port = 8080
 | 方法 | 路径 | 描述 |
 |------|------|------|
 | GET | `/health` | 健康检查 |
+| GET | `/api/v1/overview` | 获取系统概述 |
 | GET | `/api/v1/users/{trader}/orders` | 获取用户所有订单 |
 | GET | `/api/v1/users/{trader}/orders/active` | 获取用户活跃订单 |
 | GET | `/api/v1/users/{trader}/trades` | 获取用户交易历史 |
@@ -150,6 +151,62 @@ port = 8080
 | GET | `/api/v1/orderbook/{trading_pair}` | 获取订单簿 |
 
 ### 请求示例
+
+**获取系统概述**
+```bash
+curl -s "http://127.0.0.1:8080/api/v1/overview" | jq .
+```
+
+**响应示例**
+```json
+{
+  "success": true,
+  "data": {
+    "current_block": 69,
+    "match_id": "3",
+    "pending_requests": [],
+    "pending_request_count": 0,
+    "asks": [
+      {
+        "price": "210000000000",
+        "total_volume": "50000000",
+        "order_count": 1
+      }
+    ],
+    "bids": [
+      {
+        "price": "200000000000",
+        "total_volume": "100000000",
+        "order_count": 1
+      },
+      {
+        "price": "195000000000",
+        "total_volume": "100000000",
+        "order_count": 1
+      }
+    ],
+    "market_orders": {
+      "total_buy_amount": "0",
+      "total_sell_amount": "0",
+      "buy_order_count": 0,
+      "sell_order_count": 0
+    }
+  },
+  "error": null
+}
+```
+
+**系统概述字段说明**
+
+| 字段 | 说明 |
+|------|------|
+| `current_block` | 当前同步到的区块高度 |
+| `match_id` | 当前链上 matchId |
+| `pending_requests` | 待处理的 Sequencer 请求列表 (最多 10 个) |
+| `pending_request_count` | 待处理请求总数 |
+| `asks` | 卖单价格层级 (最多 10 个，按价格从低到高) |
+| `bids` | 买单价格层级 (最多 10 个，按价格从高到低) |
+| `market_orders` | 市价单统计信息 |
 
 **获取用户活跃订单**
 ```bash
@@ -230,7 +287,21 @@ curl -s "http://127.0.0.1:8080/api/v1/orderbook/0xe3fd74b5016b57bf4180a8d977a55d
 Options:
   -c, --config <CONFIG>        配置文件路径 [default: config.toml]
   -l, --log-level <LOG_LEVEL>  日志级别 [default: info]
+  -s, --start-block <BLOCK>    起始区块号（覆盖配置文件）
+      --disable-rpc            禁用 RPC/API 服务器（用于纯撮合节点）
   -h, --help                   显示帮助信息
+```
+
+**运行多个 Matcher 节点**
+
+可以运行多个 Matcher 实例，主节点提供 API 服务，其他节点仅做撮合：
+
+```bash
+# 主节点（带 API）
+./matcher -c config.toml
+
+# 撮合节点（无 API，config2.toml 无需 mongodb/api 配置）
+./matcher -c config2.toml --disable-rpc
 ```
 
 ## 项目结构
