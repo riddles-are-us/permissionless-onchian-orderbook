@@ -11,7 +11,12 @@ const fs = require('fs');
 // 读取部署配置
 const deployments = JSON.parse(fs.readFileSync('deployments.json', 'utf8'));
 
-const RPC_URL = 'http://127.0.0.1:8545';
+// 支持命令行参数选择网络: node view_orderbook.js [sepolia|local]
+const network = process.argv[2] || 'sepolia';
+const RPC_URL = network === 'local'
+  ? 'http://127.0.0.1:8545'
+  : 'https://eth-sepolia.g.alchemy.com/v2/P2hms_foHU-rHhmt8hcpU';
+
 const PRICE_DECIMALS = 8;
 const AMOUNT_DECIMALS = 8;
 
@@ -44,6 +49,7 @@ async function main() {
 
   console.log('\n========================================');
   console.log('        📊 OrderBook 状态查看器');
+  console.log(`        Network: ${network.toUpperCase()}`);
   console.log('========================================\n');
 
   // 获取订单簿数据
@@ -53,6 +59,8 @@ async function main() {
   console.log(`   Pair ID: ${deployments.pairId.substring(0, 18)}...`);
   console.log(`   Ask Head: ${pairData.askHead}`);
   console.log(`   Bid Head: ${pairData.bidHead}`);
+  console.log(`   Market Ask Head: ${pairData.marketAskHead}`);
+  console.log(`   Market Bid Head: ${pairData.marketBidHead}`);
   console.log('');
 
   // 显示卖单
@@ -96,6 +104,50 @@ async function main() {
     }
   }
   if (bidCount === 0) console.log('   (空)');
+
+  console.log('');
+
+  // 显示市价卖单
+  console.log('🔴 市价卖单 (Market Ask):');
+  console.log('   订单ID        |  数量 (WETH)  |  已成交      |  剩余');
+  console.log('   --------------|--------------|--------------|------------');
+
+  let marketAskId = pairData.marketAskHead;
+  let marketAskCount = 0;
+  while (marketAskId > 0n && marketAskCount < 10) {
+    try {
+      const order = await orderbook.orders(marketAskId);
+      const remaining = order.amount - order.filledAmount;
+      console.log(`   ${marketAskId.toString().padStart(13)} | ${formatAmount(order.amount).padStart(12)} | ${formatAmount(order.filledAmount).padStart(12)} | ${formatAmount(remaining).padStart(10)}`);
+      marketAskId = order.nextOrderId;
+      marketAskCount++;
+    } catch (e) {
+      break;
+    }
+  }
+  if (marketAskCount === 0) console.log('   (空)');
+
+  console.log('');
+
+  // 显示市价买单
+  console.log('🟢 市价买单 (Market Bid):');
+  console.log('   订单ID        |  数量 (USDC)  |  已成交      |  剩余');
+  console.log('   --------------|--------------|--------------|------------');
+
+  let marketBidId = pairData.marketBidHead;
+  let marketBidCount = 0;
+  while (marketBidId > 0n && marketBidCount < 10) {
+    try {
+      const order = await orderbook.orders(marketBidId);
+      const remaining = order.amount - order.filledAmount;
+      console.log(`   ${marketBidId.toString().padStart(13)} | ${formatAmount(order.amount).padStart(12)} | ${formatAmount(order.filledAmount).padStart(12)} | ${formatAmount(remaining).padStart(10)}`);
+      marketBidId = order.nextOrderId;
+      marketBidCount++;
+    } catch (e) {
+      break;
+    }
+  }
+  if (marketBidCount === 0) console.log('   (空)');
 
   console.log('');
 
