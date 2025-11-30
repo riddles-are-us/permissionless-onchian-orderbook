@@ -73,6 +73,18 @@ impl MatchingEngine {
 
     /// 处理一批请求
     async fn process_batch(&self) -> Result<usize> {
+        // 检查 matchId 是否同步
+        let local_match_id = self.state.get_match_id();
+        let chain_match_id = self.orderbook.match_id().call().await?;
+
+        if local_match_id != chain_match_id {
+            warn!(
+                "⚠️  matchId mismatch: local={}, chain={}. Waiting for sync...",
+                local_match_id, chain_match_id
+            );
+            return Ok(0);
+        }
+
         // 获取队列中的请求
         let requests = self
             .state

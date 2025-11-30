@@ -1,18 +1,21 @@
+mod api;
 mod config;
 mod contracts;
 mod matcher;
 mod orderbook_simulator;
 mod state;
+mod storage;
 mod sync;
 mod types;
 
 use anyhow::Result;
 use clap::Parser;
 use tracing::{info, Level};
-use tracing_subscriber;
 
+use crate::api::start_api_server;
 use crate::config::Config;
 use crate::matcher::MatchingEngine;
+use crate::storage::MongoStorage;
 use crate::sync::StateSynchronizer;
 
 #[derive(Parser, Debug)]
@@ -64,8 +67,26 @@ async fn main() -> Result<()> {
     info!("  OrderBook: {}", config.contracts.orderbook);
     info!("  Start Block: {}", config.sync.start_block);
 
+    // 初始化 MongoDB（如果启用）
+    let storage = if config.mongodb.enabled {
+        info!("📦 Connecting to MongoDB...");
+        match MongoStorage::new(&config.mongodb.uri, &config.mongodb.database).await {
+            Ok(s) => {
+                info!("  Database: {}", config.mongodb.database);
+                Some(s)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to connect to MongoDB: {}. Running without storage.", e);
+                None
+            }
+        }
+    } else {
+        info!("📦 MongoDB disabled");
+        None
+    };
+
     // 创建状态同步器（内部包含 GlobalState 和 OrderBookSimulator）
-    let synchronizer = StateSynchronizer::new(config.clone()).await?;
+    let synchronizer = StateSynchronizer::new(config.clone(), storage.clone()).await?;
     info!("🔮 State synchronizer created");
 
     // 获取共享状态
@@ -73,6 +94,28 @@ async fn main() -> Result<()> {
 
     // 创建匹配引擎（从 GlobalState 获取订单簿状态）
     let matcher = MatchingEngine::new(config.clone(), state).await?;
+
+    // 启动 API 服务器（如果启用）
+    let api_handle = if config.api.enabled {
+        if let Some(ref storage) = storage {
+            let api_config = config.api.clone();
+            let api_storage = storage.clone();
+            Some(std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Err(e) = start_api_server(api_config, api_storage).await {
+                        tracing::error!("API server error: {}", e);
+                    }
+                });
+            }))
+        } else {
+            tracing::warn!("API enabled but MongoDB is not available. API server will not start.");
+            None
+        }
+    } else {
+        info!("🌐 API server disabled");
+        None
+    };
 
     // 启动同步器（在后台运行）
     let sync_handle = tokio::spawn(async move {
@@ -99,6 +142,11 @@ async fn main() -> Result<()> {
         _ = tokio::signal::ctrl_c() => {
             info!("Received shutdown signal");
         }
+    }
+
+    // 等待 API 服务器线程结束（如果存在）
+    if let Some(handle) = api_handle {
+        let _ = handle.join();
     }
 
     info!("👋 Matcher shutdown complete");

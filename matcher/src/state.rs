@@ -19,6 +19,9 @@ pub struct GlobalState {
 
     /// 当前同步到的区块高度
     pub current_block: Arc<parking_lot::RwLock<u64>>,
+
+    /// 链上 matchId，用于检测状态同步
+    pub match_id: Arc<parking_lot::RwLock<U256>>,
 }
 
 impl GlobalState {
@@ -28,6 +31,7 @@ impl GlobalState {
             queue_head: Arc::new(parking_lot::RwLock::new(U256::zero())),
             orderbook: Arc::new(parking_lot::RwLock::new(OrderBookSimulator::new())),
             current_block: Arc::new(parking_lot::RwLock::new(0)),
+            match_id: Arc::new(parking_lot::RwLock::new(U256::zero())),
         }
     }
 
@@ -80,5 +84,15 @@ impl GlobalState {
     /// 克隆当前订单簿状态（用于模拟计算）
     pub fn clone_orderbook(&self) -> OrderBookSimulator {
         self.orderbook.read().clone()
+    }
+
+    /// 获取当前 matchId
+    pub fn get_match_id(&self) -> U256 {
+        *self.match_id.read()
+    }
+
+    /// 更新 matchId
+    pub fn update_match_id(&self, new_match_id: U256) {
+        *self.match_id.write() = new_match_id;
     }
 }

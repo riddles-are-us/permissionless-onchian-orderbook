@@ -9,6 +9,8 @@
 - 📦 **批量处理**：批量调用链上 `batchProcessRequests` API，节省 gas
 - ⚡ **高性能**：使用深拷贝隔离模拟计算，保证状态一致性
 - 📊 **实时监控**：完整的日志系统，监控匹配引擎运行状态
+- 🌐 **REST API**：提供 HTTP API 查询订单和订单簿
+- 💾 **MongoDB 存储**：持久化订单数据，支持历史查询
 
 ## 架构设计
 
@@ -120,7 +122,107 @@ matching_interval_ms = 3000
 private_key = "0x..."
 gas_price_gwei = 1
 gas_limit = 5000000
+
+[mongodb]
+enabled = true
+uri = "mongodb://localhost:27017"
+database = "orderbook_0x..."  # 建议使用合约地址作为数据库名
+
+[api]
+enabled = true
+host = "127.0.0.1"
+port = 8080
 ```
+
+## REST API
+
+启用 API 后，可通过 HTTP 接口查询订单数据。
+
+### API 端点
+
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| GET | `/health` | 健康检查 |
+| GET | `/api/v1/users/{trader}/orders` | 获取用户所有订单 |
+| GET | `/api/v1/users/{trader}/orders/active` | 获取用户活跃订单 |
+| GET | `/api/v1/users/{trader}/trades` | 获取用户交易历史 |
+| GET | `/api/v1/orders/{order_id}` | 获取单个订单详情 |
+| GET | `/api/v1/orderbook/{trading_pair}` | 获取订单簿 |
+
+### 请求示例
+
+**获取用户活跃订单**
+```bash
+curl -s "http://127.0.0.1:8080/api/v1/users/0x70997970c51812dc3a010c7d01b50e0d17dc79c8/orders/active" | jq .
+```
+
+**响应示例**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "_id": "1",
+      "trading_pair": "0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816",
+      "trader": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+      "order_type": "limit",
+      "is_ask": false,
+      "price": "200000000000",
+      "amount": "100000000",
+      "filled_amount": "0",
+      "status": "active",
+      "created_at": "2025-11-30T06:14:43.736925606Z",
+      "updated_at": "2025-11-30T06:14:43.736925995Z",
+      "block_number": 59,
+      "tx_hash": null
+    }
+  ],
+  "error": null
+}
+```
+
+**获取订单簿**
+```bash
+curl -s "http://127.0.0.1:8080/api/v1/orderbook/0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816?depth=10" | jq .
+```
+
+**响应示例**
+```json
+{
+  "success": true,
+  "data": {
+    "bids": [
+      {
+        "_id": "1",
+        "price": "200000000000",
+        "amount": "100000000",
+        "status": "active"
+      }
+    ],
+    "asks": []
+  },
+  "error": null
+}
+```
+
+### 查询参数
+
+| 端点 | 参数 | 说明 |
+|------|------|------|
+| `/users/{trader}/orders` | `status` | 过滤状态: pending, active, partiallyfilled, filled, cancelled |
+| `/users/{trader}/orders` | `limit` | 返回数量限制 (默认 50, 最大 100) |
+| `/users/{trader}/orders` | `offset` | 分页偏移 |
+| `/orderbook/{trading_pair}` | `depth` | 订单簿深度 (默认 20, 最大 100) |
+
+### 订单状态说明
+
+| 状态 | 说明 |
+|------|------|
+| `pending` | 在 Sequencer 队列中等待处理 |
+| `active` | 已插入 OrderBook，等待成交 |
+| `partiallyfilled` | 部分成交 |
+| `filled` | 完全成交 |
+| `cancelled` | 已取消 |
 
 ### 命令行参数
 
@@ -143,7 +245,9 @@ matcher/
 │   ├── state.rs              # GlobalState 状态管理
 │   ├── sync.rs               # 状态同步器 + 事件监听
 │   ├── matcher.rs            # 匹配引擎
-│   └── orderbook_simulator.rs # 订单簿模拟器
+│   ├── orderbook_simulator.rs # 订单簿模拟器
+│   ├── api.rs                # REST API 服务
+│   └── storage.rs            # MongoDB 存储层
 ├── abi/                      # 合约 ABI 文件
 ├── Cargo.toml
 └── config.toml

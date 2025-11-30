@@ -9,6 +9,10 @@ pub struct Config {
     pub sync: SyncConfig,
     pub matching: MatchingConfig,
     pub executor: ExecutorConfig,
+    #[serde(default)]
+    pub mongodb: MongoDbConfig,
+    #[serde(default)]
+    pub api: ApiConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +45,40 @@ pub struct ExecutorConfig {
     pub private_key: String,
     pub gas_price_gwei: u64,
     pub gas_limit: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MongoDbConfig {
+    pub uri: String,
+    pub database: String,
+    pub enabled: bool,
+}
+
+impl Default for MongoDbConfig {
+    fn default() -> Self {
+        Self {
+            uri: "mongodb://localhost:27017".to_string(),
+            database: "orderbook".to_string(),
+            enabled: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+        }
+    }
 }
 
 impl Config {
