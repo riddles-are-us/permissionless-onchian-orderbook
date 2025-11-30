@@ -1,5 +1,5 @@
 
-# **Whitepaper: A Permissionless, Gas-Efficient On-Chain Order Book**
+# **Whitepaper: A Permissionless, Gas-Efficient On-Chain Order Book that is run by the public**
 
 ## **Abstract**
 
@@ -128,7 +128,7 @@ The journey of an order from submission to settlement is a seamless interplay be
 
 ---
 
-## **4. Key Innovations**
+## 4. Key Features
 
 ### **4.1 Fair Ordering via Sequencer**
 

@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  matcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orderbook-matcher
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config:ro
+      - ../deployments.json:/app/deployments.json:ro
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped
+    # Use host network to access local anvil and mongodb
+    network_mode: host
+
+  # Optional: secondary matcher without RPC (pure matching node)
+  # matcher-secondary:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: orderbook-matcher-secondary
+  #   volumes:
+  #     - ./config:/app/config:ro
+  #     - ../deployments.json:/app/deployments.json:ro
+  #   environment:
+  #     - RUST_LOG=info
+  #   command: ["-c", "/app/config/config2.toml", "--disable-rpc"]
+  #   restart: unless-stopped
+  #   network_mode: host
