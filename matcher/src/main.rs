@@ -96,9 +96,6 @@ async fn main() -> Result<()> {
     // 获取共享状态
     let state = synchronizer.state();
 
-    // 创建匹配引擎（从 GlobalState 获取订单簿状态）
-    let matcher = MatchingEngine::new(config.clone(), state).await?;
-
     // 启动 API 服务器（如果启用且未禁用 RPC）
     let api_handle = if args.disable_rpc {
         info!("🌐 RPC/API server disabled (--disable-rpc)");
@@ -107,10 +104,11 @@ async fn main() -> Result<()> {
         if let Some(ref storage) = storage {
             let api_config = config.api.clone();
             let api_storage = storage.clone();
+            let api_state = state.clone();
             Some(std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
-                    if let Err(e) = start_api_server(api_config, api_storage).await {
+                    if let Err(e) = start_api_server(api_config, api_storage, Some(api_state)).await {
                         tracing::error!("API server error: {}", e);
                     }
                 });
@@ -123,6 +121,9 @@ async fn main() -> Result<()> {
         info!("🌐 API server disabled");
         None
     };
+
+    // 创建匹配引擎（从 GlobalState 获取订单簿状态）
+    let matcher = MatchingEngine::new(config.clone(), state).await?;
 
     // 启动同步器（在后台运行）
     let sync_handle = tokio::spawn(async move {

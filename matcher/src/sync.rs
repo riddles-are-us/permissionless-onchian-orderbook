@@ -397,333 +397,299 @@ impl StateSynchronizer {
         storage: Option<MongoStorage>,
         from_block: u64,
     ) -> Result<()> {
-        use crate::contracts::order_book::*;
-
         info!("📡 Starting OrderBook event listener from block {}", from_block);
 
-        // 创建事件过滤器（从同步的区块开始）
         // 使用 from_block + 1 避免重复处理已同步的状态
         let event_start_block = from_block + 1;
-        let trade_filter = orderbook.event::<TradeFilter>().from_block(event_start_block);
-        let order_filled_filter = orderbook.event::<OrderFilledFilter>().from_block(event_start_block);
-        let order_removed_filter = orderbook.event::<OrderRemovedFilter>().from_block(event_start_block);
-        let order_inserted_filter = orderbook.event::<OrderInsertedFilter>().from_block(event_start_block);
-        let price_level_created_filter = orderbook.event::<PriceLevelCreatedFilter>().from_block(event_start_block);
-        let price_level_removed_filter = orderbook.event::<PriceLevelRemovedFilter>().from_block(event_start_block);
-        let match_id_changed_filter = orderbook.event::<MatchIdChangedFilter>().from_block(event_start_block);
 
-        // 创建事件流
-        let mut trade_stream = trade_filter.stream().await?.take(10000);
-        let mut order_filled_stream = order_filled_filter.stream().await?.take(10000);
-        let mut order_removed_stream = order_removed_filter.stream().await?.take(10000);
-        let mut order_inserted_stream = order_inserted_filter.stream().await?.take(10000);
-        let mut price_level_created_stream = price_level_created_filter.stream().await?.take(10000);
-        let mut price_level_removed_stream = price_level_removed_filter.stream().await?.take(10000);
-        let mut match_id_changed_stream = match_id_changed_filter.stream().await?.take(10000);
-
+        // 使用 events() 监听所有事件，带重试逻辑
         loop {
-            tokio::select! {
-                Some(event) = order_inserted_stream.next() => {
-                    match event {
-                        Ok(inserted) => {
-                            info!(
-                                "📦 OrderInserted: orderId={}, price={}, amount={}, isAsk={}",
-                                inserted.order_id,
-                                inserted.price,
-                                inserted.amount,
-                                inserted.is_ask
-                            );
+            let events_filter = orderbook.events().from_block(event_start_block);
 
-                            let mut orderbook = state.orderbook.write();
-                            let level_key = if inserted.is_ask {
-                                inserted.price
-                            } else {
-                                inserted.price | (U256::one() << 255)
-                            };
+            let mut event_stream = match events_filter.stream().await {
+                Ok(stream) => stream,
+                Err(e) => {
+                    debug!(
+                        "OrderBook event stream creation failed (block {} may not exist yet): {}, retrying in 2s...",
+                        event_start_block, e
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
 
-                            // 先读取需要的信息
-                            let old_tail = orderbook.price_levels.get(&level_key)
-                                .map(|l| l.tail_order_id)
-                                .unwrap_or(U256::zero());
+            info!("📡 OrderBook event stream created successfully from block {}", event_start_block);
 
-                            // 更新旧尾部订单的 next_order_id
-                            if !old_tail.is_zero() {
-                                if let Some(tail_order) = orderbook.orders.get_mut(&old_tail) {
-                                    tail_order.next_order_id = inserted.order_id;
-                                }
-                            }
+            // 处理事件流
+            while let Some(event_result) = event_stream.next().await {
+                match event_result {
+                    Ok(event) => {
+                        Self::handle_orderbook_event(event, &state, &storage).await;
+                    }
+                    Err(e) => {
+                        warn!("Error receiving OrderBook event: {}, will retry...", e);
+                        break; // 跳出内层循环，重新创建事件流
+                    }
+                }
+            }
 
-                            // 更新价格层级
-                            if let Some(level) = orderbook.price_levels.get_mut(&level_key) {
-                                if old_tail.is_zero() {
-                                    level.head_order_id = inserted.order_id;
-                                }
-                                level.tail_order_id = inserted.order_id;
-                                level.total_volume += inserted.amount;
-                            }
+            warn!("OrderBook event stream ended, reconnecting in 2s...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        }
+    }
 
-                            // 创建并插入新订单
-                            let sim_order = SimOrder {
-                                id: inserted.order_id,
-                                amount: inserted.amount,
-                                filled_amount: U256::zero(),
-                                is_market_order: false,
-                                is_ask: inserted.is_ask,
-                                price_level: inserted.price,
-                                next_order_id: U256::zero(),
-                                prev_order_id: old_tail,
-                            };
-                            orderbook.orders.insert(inserted.order_id, sim_order);
+    /// 处理单个 OrderBook 事件
+    async fn handle_orderbook_event(
+        event: crate::contracts::order_book::OrderBookEvents,
+        state: &GlobalState,
+        storage: &Option<MongoStorage>,
+    ) {
+        use crate::contracts::order_book::OrderBookEvents;
 
-                            debug!(
-                                "  Added order {} to simulator (price={}, is_ask={})",
-                                inserted.order_id, inserted.price, inserted.is_ask
-                            );
-                        }
-                        Err(e) => warn!("Error receiving OrderInserted event: {}", e),
+        match event {
+            OrderBookEvents::OrderInsertedFilter(inserted) => {
+                info!(
+                    "📦 OrderInserted: orderId={}, price={}, amount={}, isAsk={}",
+                    inserted.order_id,
+                    inserted.price,
+                    inserted.amount,
+                    inserted.is_ask
+                );
+
+                let mut orderbook = state.orderbook.write();
+                let level_key = if inserted.is_ask {
+                    inserted.price
+                } else {
+                    inserted.price | (U256::one() << 255)
+                };
+
+                let old_tail = orderbook.price_levels.get(&level_key)
+                    .map(|l| l.tail_order_id)
+                    .unwrap_or(U256::zero());
+
+                if !old_tail.is_zero() {
+                    if let Some(tail_order) = orderbook.orders.get_mut(&old_tail) {
+                        tail_order.next_order_id = inserted.order_id;
                     }
                 }
 
-                Some(event) = price_level_created_stream.next() => {
-                    match event {
-                        Ok(created) => {
-                            info!(
-                                "📊 PriceLevelCreated: price={}, isAsk={}",
-                                created.price,
-                                created.is_ask
-                            );
-
-                            // 创建新的价格层级
-                            let new_level = SimPriceLevel {
-                                price: created.price,
-                                total_volume: U256::zero(),
-                                head_order_id: U256::zero(),
-                                tail_order_id: U256::zero(),
-                                next_price: U256::zero(),
-                                prev_price: U256::zero(),
-                            };
-
-                            let mut orderbook = state.orderbook.write();
-                            orderbook.add_existing_price_level(new_level, created.is_ask);
-
-                            // 更新链表指针 - 需要找到正确的位置插入
-                            // 简化处理：直接更新 head/tail
-                            let level_key = if created.is_ask {
-                                created.price
-                            } else {
-                                created.price | (U256::one() << 255)
-                            };
-
-                            if created.is_ask {
-                                let old_head = orderbook.ask_head;
-                                if old_head.is_zero() || created.price < old_head {
-                                    // 更新旧 head 的 prev_price
-                                    if !old_head.is_zero() {
-                                        let old_head_key = old_head;
-                                        if let Some(old_head_level) = orderbook.price_levels.get_mut(&old_head_key) {
-                                            old_head_level.prev_price = created.price;
-                                        }
-                                        if let Some(new_level) = orderbook.price_levels.get_mut(&level_key) {
-                                            new_level.next_price = old_head;
-                                        }
-                                    }
-                                    orderbook.ask_head = created.price;
-                                }
-                                let old_tail = orderbook.ask_tail;
-                                if old_tail.is_zero() || created.price > old_tail {
-                                    orderbook.ask_tail = created.price;
-                                }
-                            } else {
-                                let old_head = orderbook.bid_head;
-                                if old_head.is_zero() || created.price > old_head {
-                                    // 更新旧 head 的 prev_price
-                                    if !old_head.is_zero() {
-                                        let old_head_key = old_head | (U256::one() << 255);
-                                        if let Some(old_head_level) = orderbook.price_levels.get_mut(&old_head_key) {
-                                            old_head_level.prev_price = created.price;
-                                        }
-                                        if let Some(new_level) = orderbook.price_levels.get_mut(&level_key) {
-                                            new_level.next_price = old_head;
-                                        }
-                                    }
-                                    orderbook.bid_head = created.price;
-                                }
-                                let old_tail = orderbook.bid_tail;
-                                if old_tail.is_zero() || created.price < old_tail {
-                                    orderbook.bid_tail = created.price;
-                                }
-                            }
-
-                            debug!(
-                                "  Created price level {} (is_ask={})",
-                                created.price, created.is_ask
-                            );
-                        }
-                        Err(e) => warn!("Error receiving PriceLevelCreated event: {}", e),
+                if let Some(level) = orderbook.price_levels.get_mut(&level_key) {
+                    if old_tail.is_zero() {
+                        level.head_order_id = inserted.order_id;
                     }
+                    level.tail_order_id = inserted.order_id;
+                    level.total_volume += inserted.amount;
                 }
 
-                Some(event) = price_level_removed_stream.next() => {
-                    match event {
-                        Ok(removed) => {
-                            info!("🗑️  PriceLevelRemoved: price={}", removed.price);
-                            // 从 GlobalState.orderbook 中移除价格层级
-                            // 注意：需要知道 is_ask，但事件中没有这个字段
-                            // 尝试两个 key
-                            let mut orderbook = state.orderbook.write();
-                            let ask_key = removed.price;
-                            let bid_key = removed.price | (U256::one() << 255);
+                let sim_order = SimOrder {
+                    id: inserted.order_id,
+                    amount: inserted.amount,
+                    filled_amount: U256::zero(),
+                    is_market_order: false,
+                    is_ask: inserted.is_ask,
+                    price_level: inserted.price,
+                    next_order_id: U256::zero(),
+                    prev_order_id: old_tail,
+                };
+                orderbook.orders.insert(inserted.order_id, sim_order);
 
-                            if orderbook.price_levels.contains_key(&ask_key) {
-                                // 更新链表指针
-                                if let Some(level) = orderbook.price_levels.get(&ask_key) {
-                                    let prev = level.prev_price;
-                                    let next = level.next_price;
-                                    if !prev.is_zero() {
-                                        if let Some(prev_level) = orderbook.price_levels.get_mut(&prev) {
-                                            prev_level.next_price = next;
-                                        }
-                                    } else {
-                                        orderbook.ask_head = next;
-                                    }
-                                    if !next.is_zero() {
-                                        if let Some(next_level) = orderbook.price_levels.get_mut(&next) {
-                                            next_level.prev_price = prev;
-                                        }
-                                    } else {
-                                        orderbook.ask_tail = prev;
-                                    }
-                                }
-                                orderbook.price_levels.remove(&ask_key);
-                            } else if orderbook.price_levels.contains_key(&bid_key) {
-                                // 更新链表指针
-                                if let Some(level) = orderbook.price_levels.get(&bid_key) {
-                                    let prev = level.prev_price;
-                                    let next = level.next_price;
-                                    let prev_key = prev | (U256::one() << 255);
-                                    let next_key = next | (U256::one() << 255);
-                                    if !prev.is_zero() {
-                                        if let Some(prev_level) = orderbook.price_levels.get_mut(&prev_key) {
-                                            prev_level.next_price = next;
-                                        }
-                                    } else {
-                                        orderbook.bid_head = next;
-                                    }
-                                    if !next.is_zero() {
-                                        if let Some(next_level) = orderbook.price_levels.get_mut(&next_key) {
-                                            next_level.prev_price = prev;
-                                        }
-                                    } else {
-                                        orderbook.bid_tail = prev;
-                                    }
-                                }
-                                orderbook.price_levels.remove(&bid_key);
+                debug!(
+                    "  Added order {} to simulator (price={}, is_ask={})",
+                    inserted.order_id, inserted.price, inserted.is_ask
+                );
+            }
+
+            OrderBookEvents::PriceLevelCreatedFilter(created) => {
+                info!(
+                    "📊 PriceLevelCreated: price={}, isAsk={}",
+                    created.price,
+                    created.is_ask
+                );
+
+                let new_level = SimPriceLevel {
+                    price: created.price,
+                    total_volume: U256::zero(),
+                    head_order_id: U256::zero(),
+                    tail_order_id: U256::zero(),
+                    next_price: U256::zero(),
+                    prev_price: U256::zero(),
+                };
+
+                let mut orderbook = state.orderbook.write();
+                orderbook.add_existing_price_level(new_level, created.is_ask);
+
+                let level_key = if created.is_ask {
+                    created.price
+                } else {
+                    created.price | (U256::one() << 255)
+                };
+
+                if created.is_ask {
+                    let old_head = orderbook.ask_head;
+                    if old_head.is_zero() || created.price < old_head {
+                        if !old_head.is_zero() {
+                            let old_head_key = old_head;
+                            if let Some(old_head_level) = orderbook.price_levels.get_mut(&old_head_key) {
+                                old_head_level.prev_price = created.price;
+                            }
+                            if let Some(new_level) = orderbook.price_levels.get_mut(&level_key) {
+                                new_level.next_price = old_head;
                             }
                         }
-                        Err(e) => warn!("Error receiving PriceLevelRemoved event: {}", e),
+                        orderbook.ask_head = created.price;
                     }
-                }
-
-                Some(event) = trade_stream.next() => {
-                    match event {
-                        Ok(trade) => {
-                            info!(
-                                "🔄 Trade: buy={}, sell={}, price={}, amount={}",
-                                trade.buy_order_id,
-                                trade.sell_order_id,
-                                trade.price,
-                                trade.amount
-                            );
-                            // Trade 事件后会有 OrderFilled 事件来更新订单状态
-                        }
-                        Err(e) => warn!("Error receiving trade event: {}", e),
+                    let old_tail = orderbook.ask_tail;
+                    if old_tail.is_zero() || created.price > old_tail {
+                        orderbook.ask_tail = created.price;
                     }
-                }
-
-                Some(event) = order_filled_stream.next() => {
-                    match event {
-                        Ok(filled) => {
-                            info!(
-                                "✅ OrderFilled: order={}, filled={}, fully_filled={}",
-                                filled.order_id,
-                                filled.filled_amount,
-                                filled.is_fully_filled
-                            );
-
-                            // 更新 GlobalState.orderbook 中的订单状态
-                            {
-                                let mut orderbook = state.orderbook.write();
-                                if filled.is_fully_filled {
-                                    // 移除完全成交的订单
-                                    orderbook.orders.remove(&filled.order_id);
-                                } else {
-                                    // 更新部分成交
-                                    if let Some(order) = orderbook.orders.get_mut(&filled.order_id) {
-                                        order.filled_amount = filled.filled_amount;
-                                    }
-                                }
-                            } // 释放 write guard
-
-                            // 更新 MongoDB 中的订单状态
-                            if let Some(ref storage) = storage {
-                                let status = if filled.is_fully_filled {
-                                    OrderStatus::Filled
-                                } else {
-                                    OrderStatus::PartiallyFilled
-                                };
-                                if let Err(e) = storage.update_order_status(
-                                    &filled.order_id.to_string(),
-                                    status,
-                                    Some(&filled.filled_amount.to_string()),
-                                ).await {
-                                    warn!("Failed to update order in MongoDB: {}", e);
-                                }
+                } else {
+                    let old_head = orderbook.bid_head;
+                    if old_head.is_zero() || created.price > old_head {
+                        if !old_head.is_zero() {
+                            let old_head_key = old_head | (U256::one() << 255);
+                            if let Some(old_head_level) = orderbook.price_levels.get_mut(&old_head_key) {
+                                old_head_level.prev_price = created.price;
+                            }
+                            if let Some(new_level) = orderbook.price_levels.get_mut(&level_key) {
+                                new_level.next_price = old_head;
                             }
                         }
-                        Err(e) => warn!("Error receiving order filled event: {}", e),
+                        orderbook.bid_head = created.price;
+                    }
+                    let old_tail = orderbook.bid_tail;
+                    if old_tail.is_zero() || created.price < old_tail {
+                        orderbook.bid_tail = created.price;
                     }
                 }
 
-                Some(event) = order_removed_stream.next() => {
-                    match event {
-                        Ok(removed) => {
-                            info!("🗑️  OrderRemoved: order={}", removed.order_id);
-                            // 从 GlobalState.orderbook 中移除订单
-                            {
-                                let mut orderbook = state.orderbook.write();
-                                orderbook.orders.remove(&removed.order_id);
-                            } // 释放 write guard
+                debug!(
+                    "  Created price level {} (is_ask={})",
+                    created.price, created.is_ask
+                );
+            }
 
-                            // 更新 MongoDB 中的订单状态为已取消
-                            if let Some(ref storage) = storage {
-                                if let Err(e) = storage.update_order_status(
-                                    &removed.order_id.to_string(),
-                                    OrderStatus::Cancelled,
-                                    None,
-                                ).await {
-                                    warn!("Failed to update order in MongoDB: {}", e);
-                                }
+            OrderBookEvents::PriceLevelRemovedFilter(removed) => {
+                info!("🗑️  PriceLevelRemoved: price={}", removed.price);
+                let mut orderbook = state.orderbook.write();
+                let ask_key = removed.price;
+                let bid_key = removed.price | (U256::one() << 255);
+
+                if orderbook.price_levels.contains_key(&ask_key) {
+                    if let Some(level) = orderbook.price_levels.get(&ask_key) {
+                        let prev = level.prev_price;
+                        let next = level.next_price;
+                        if !prev.is_zero() {
+                            if let Some(prev_level) = orderbook.price_levels.get_mut(&prev) {
+                                prev_level.next_price = next;
                             }
+                        } else {
+                            orderbook.ask_head = next;
                         }
-                        Err(e) => warn!("Error receiving order removed event: {}", e),
+                        if !next.is_zero() {
+                            if let Some(next_level) = orderbook.price_levels.get_mut(&next) {
+                                next_level.prev_price = prev;
+                            }
+                        } else {
+                            orderbook.ask_tail = prev;
+                        }
+                    }
+                    orderbook.price_levels.remove(&ask_key);
+                } else if orderbook.price_levels.contains_key(&bid_key) {
+                    if let Some(level) = orderbook.price_levels.get(&bid_key) {
+                        let prev = level.prev_price;
+                        let next = level.next_price;
+                        let prev_key = prev | (U256::one() << 255);
+                        let next_key = next | (U256::one() << 255);
+                        if !prev.is_zero() {
+                            if let Some(prev_level) = orderbook.price_levels.get_mut(&prev_key) {
+                                prev_level.next_price = next;
+                            }
+                        } else {
+                            orderbook.bid_head = next;
+                        }
+                        if !next.is_zero() {
+                            if let Some(next_level) = orderbook.price_levels.get_mut(&next_key) {
+                                next_level.prev_price = prev;
+                            }
+                        } else {
+                            orderbook.bid_tail = prev;
+                        }
+                    }
+                    orderbook.price_levels.remove(&bid_key);
+                }
+            }
+
+            OrderBookEvents::TradeFilter(trade) => {
+                info!(
+                    "🔄 Trade: buy={}, sell={}, price={}, amount={}",
+                    trade.buy_order_id,
+                    trade.sell_order_id,
+                    trade.price,
+                    trade.amount
+                );
+            }
+
+            OrderBookEvents::OrderFilledFilter(filled) => {
+                info!(
+                    "✅ OrderFilled: order={}, filled={}, fully_filled={}",
+                    filled.order_id,
+                    filled.filled_amount,
+                    filled.is_fully_filled
+                );
+
+                {
+                    let mut orderbook = state.orderbook.write();
+                    if filled.is_fully_filled {
+                        orderbook.orders.remove(&filled.order_id);
+                    } else {
+                        if let Some(order) = orderbook.orders.get_mut(&filled.order_id) {
+                            order.filled_amount = filled.filled_amount;
+                        }
                     }
                 }
 
-                Some(event) = match_id_changed_stream.next() => {
-                    match event {
-                        Ok(changed) => {
-                            info!("🔄 MatchIdChanged: newMatchId={}", changed.new_match_id);
-                            state.update_match_id(changed.new_match_id);
-                        }
-                        Err(e) => warn!("Error receiving MatchIdChanged event: {}", e),
+                if let Some(ref storage) = storage {
+                    let status = if filled.is_fully_filled {
+                        OrderStatus::Filled
+                    } else {
+                        OrderStatus::PartiallyFilled
+                    };
+                    if let Err(e) = storage.update_order_status(
+                        &filled.order_id.to_string(),
+                        status,
+                        Some(&filled.filled_amount.to_string()),
+                    ).await {
+                        warn!("Failed to update order in MongoDB: {}", e);
                     }
                 }
+            }
 
-                else => {
-                    warn!("All event streams ended, restarting...");
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                    return Ok(());
+            OrderBookEvents::OrderRemovedFilter(removed) => {
+                info!("🗑️  OrderRemoved: order={}", removed.order_id);
+                {
+                    let mut orderbook = state.orderbook.write();
+                    orderbook.orders.remove(&removed.order_id);
                 }
+
+                if let Some(ref storage) = storage {
+                    if let Err(e) = storage.update_order_status(
+                        &removed.order_id.to_string(),
+                        OrderStatus::Cancelled,
+                        None,
+                    ).await {
+                        warn!("Failed to update order in MongoDB: {}", e);
+                    }
+                }
+            }
+
+            OrderBookEvents::MatchIdChangedFilter(changed) => {
+                info!("🔄 MatchIdChanged: newMatchId={}", changed.new_match_id);
+                state.update_match_id(changed.new_match_id);
+            }
+
+            // 忽略其他事件
+            _ => {
+                debug!("Received unhandled OrderBook event");
             }
         }
     }
@@ -737,121 +703,141 @@ impl StateSynchronizer {
         storage: Option<MongoStorage>,
         from_block: u64,
     ) -> Result<()> {
-        use crate::contracts::sequencer::*;
-
         info!("📡 Starting Sequencer event listener from block {}", from_block);
 
-        // 创建事件过滤器（从同步的区块之后开始，避免重复处理）
         // 使用 from_block + 1 因为 from_block 的状态已经通过 RPC 同步了
         let event_start_block = from_block + 1;
-        let place_order_filter = sequencer.event::<PlaceOrderRequestedFilter>().from_block(event_start_block);
-        let remove_order_filter = sequencer.event::<RemoveOrderRequestedFilter>().from_block(event_start_block);
 
-        // 创建事件流
-        let mut place_order_stream = place_order_filter.stream().await?.take(10000);
-        let mut remove_order_stream = remove_order_filter.stream().await?.take(10000);
-
+        // 使用 events() 监听所有事件，带重试逻辑
         loop {
-            tokio::select! {
-                Some(event) = place_order_stream.next() => {
-                    match event {
-                        Ok(place_order) => {
-                            info!(
-                                "📥 PlaceOrderRequested: requestId={}, price={}, amount={}, isAsk={}",
-                                place_order.request_id,
-                                place_order.price,
-                                place_order.amount,
-                                place_order.is_ask
-                            );
+            let events_filter = sequencer.events().from_block(event_start_block);
 
-                            // 创建请求并添加到 GlobalState
-                            let order_type = match place_order.order_type {
-                                0 => OrderType::Limit,
-                                1 => OrderType::Market,
-                                _ => OrderType::Limit,
-                            };
+            let mut event_stream = match events_filter.stream().await {
+                Ok(stream) => stream,
+                Err(e) => {
+                    debug!(
+                        "Sequencer event stream creation failed (block {} may not exist yet): {}, retrying in 2s...",
+                        event_start_block, e
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
 
-                            let request = QueuedRequest {
-                                request_id: place_order.request_id,
-                                request_type: RequestType::PlaceOrder,
-                                trading_pair: place_order.trading_pair,
-                                trader: place_order.trader,
-                                order_type: order_type.clone(),
-                                is_ask: place_order.is_ask,
-                                price: place_order.price,
-                                amount: place_order.amount,
-                                order_id_to_remove: U256::zero(),
-                                next_request_id: U256::zero(), // 将在处理时更新
-                            };
+            info!("📡 Sequencer event stream created successfully from block {}", event_start_block);
 
-                            state.add_request(request);
-                            state.update_queue_head(place_order.request_id);
-
-                            // 保存订单到 MongoDB
-                            if let Some(ref storage) = storage {
-                                let stored_order = StoredOrder {
-                                    order_id: place_order.request_id.to_string(),
-                                    trading_pair: format!("0x{}", hex::encode(place_order.trading_pair)),
-                                    trader: format!("{:?}", place_order.trader).to_lowercase(),
-                                    order_type: match order_type {
-                                        OrderType::Limit => StoredOrderType::Limit,
-                                        OrderType::Market => StoredOrderType::Market,
-                                    },
-                                    is_ask: place_order.is_ask,
-                                    price: place_order.price.to_string(),
-                                    amount: place_order.amount.to_string(),
-                                    filled_amount: "0".to_string(),
-                                    status: OrderStatus::Pending,
-                                    created_at: Utc::now(),
-                                    updated_at: Utc::now(),
-                                    block_number: from_block,
-                                    tx_hash: None,
-                                };
-
-                                if let Err(e) = storage.upsert_order(&stored_order).await {
-                                    warn!("Failed to save order to MongoDB: {}", e);
-                                }
-                            }
-                        }
-                        Err(e) => warn!("Error receiving PlaceOrderRequested event: {}", e),
+            // 处理事件流
+            while let Some(event_result) = event_stream.next().await {
+                match event_result {
+                    Ok(event) => {
+                        Self::handle_sequencer_event(event, &state, &storage, from_block).await;
+                    }
+                    Err(e) => {
+                        warn!("Error receiving Sequencer event: {}, will retry...", e);
+                        break; // 跳出内层循环，重新创建事件流
                     }
                 }
+            }
 
-                Some(event) = remove_order_stream.next() => {
-                    match event {
-                        Ok(remove_order) => {
-                            info!(
-                                "📥 RemoveOrderRequested: requestId={}, orderIdToRemove={}",
-                                remove_order.request_id,
-                                remove_order.order_id_to_remove
-                            );
+            warn!("Sequencer event stream ended, reconnecting in 2s...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        }
+    }
 
-                            // 创建请求并添加到 GlobalState
-                            let request = QueuedRequest {
-                                request_id: remove_order.request_id,
-                                request_type: RequestType::RemoveOrder,
-                                trading_pair: remove_order.trading_pair,
-                                trader: remove_order.trader,
-                                order_type: OrderType::Limit, // RemoveOrder 不关心 orderType
-                                is_ask: false, // 将从链上获取
-                                price: U256::zero(),
-                                amount: U256::zero(),
-                                order_id_to_remove: remove_order.order_id_to_remove,
-                                next_request_id: U256::zero(),
-                            };
+    /// 处理单个 Sequencer 事件
+    async fn handle_sequencer_event(
+        event: crate::contracts::sequencer::SequencerEvents,
+        state: &GlobalState,
+        storage: &Option<MongoStorage>,
+        from_block: u64,
+    ) {
+        use crate::contracts::sequencer::SequencerEvents;
 
-                            state.add_request(request);
-                            state.update_queue_head(remove_order.request_id);
-                        }
-                        Err(e) => warn!("Error receiving RemoveOrderRequested event: {}", e),
+        match event {
+            SequencerEvents::PlaceOrderRequestedFilter(place_order) => {
+                info!(
+                    "📥 PlaceOrderRequested: requestId={}, price={}, amount={}, isAsk={}",
+                    place_order.request_id,
+                    place_order.price,
+                    place_order.amount,
+                    place_order.is_ask
+                );
+
+                let order_type = match place_order.order_type {
+                    0 => OrderType::Limit,
+                    1 => OrderType::Market,
+                    _ => OrderType::Limit,
+                };
+
+                let request = QueuedRequest {
+                    request_id: place_order.request_id,
+                    request_type: RequestType::PlaceOrder,
+                    trading_pair: place_order.trading_pair,
+                    trader: place_order.trader,
+                    order_type: order_type.clone(),
+                    is_ask: place_order.is_ask,
+                    price: place_order.price,
+                    amount: place_order.amount,
+                    order_id_to_remove: U256::zero(),
+                    next_request_id: U256::zero(),
+                };
+
+                state.add_request(request);
+                state.update_queue_head(place_order.request_id);
+
+                if let Some(ref storage) = storage {
+                    let stored_order = StoredOrder {
+                        order_id: place_order.request_id.to_string(),
+                        trading_pair: format!("0x{}", hex::encode(place_order.trading_pair)),
+                        trader: format!("{:?}", place_order.trader).to_lowercase(),
+                        order_type: match order_type {
+                            OrderType::Limit => StoredOrderType::Limit,
+                            OrderType::Market => StoredOrderType::Market,
+                        },
+                        is_ask: place_order.is_ask,
+                        price: place_order.price.to_string(),
+                        amount: place_order.amount.to_string(),
+                        filled_amount: "0".to_string(),
+                        status: OrderStatus::Pending,
+                        created_at: Utc::now(),
+                        updated_at: Utc::now(),
+                        block_number: from_block,
+                        tx_hash: None,
+                    };
+
+                    if let Err(e) = storage.upsert_order(&stored_order).await {
+                        warn!("Failed to save order to MongoDB: {}", e);
                     }
                 }
+            }
 
-                else => {
-                    warn!("All Sequencer event streams ended, restarting...");
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                    return Ok(());
-                }
+            SequencerEvents::RemoveOrderRequestedFilter(remove_order) => {
+                info!(
+                    "📥 RemoveOrderRequested: requestId={}, orderIdToRemove={}",
+                    remove_order.request_id,
+                    remove_order.order_id_to_remove
+                );
+
+                let request = QueuedRequest {
+                    request_id: remove_order.request_id,
+                    request_type: RequestType::RemoveOrder,
+                    trading_pair: remove_order.trading_pair,
+                    trader: remove_order.trader,
+                    order_type: OrderType::Limit,
+                    is_ask: false,
+                    price: U256::zero(),
+                    amount: U256::zero(),
+                    order_id_to_remove: remove_order.order_id_to_remove,
+                    next_request_id: U256::zero(),
+                };
+
+                state.add_request(request);
+                state.update_queue_head(remove_order.request_id);
+            }
+
+            // 忽略其他事件
+            _ => {
+                debug!("Received unhandled Sequencer event");
             }
         }
     }
