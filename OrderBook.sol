@@ -61,6 +61,10 @@ contract OrderBook {
     // 存储交易对对应的订单簿ID（用于资金转移）
     mapping(uint256 => bytes32) public orderTradingPairs;
 
+    // 匹配版本号，每次处理batch请求或主动match后递增
+    // matcher可以用这个值来检测是否有未同步的事件
+    uint256 public matchId;
+
     // 事件
     event OrderInserted(bytes32 indexed tradingPair, uint256 indexed orderId, bool isAsk, uint256 price, uint256 amount);
     event OrderRemoved(bytes32 indexed tradingPair, uint256 indexed orderId);
@@ -80,6 +84,7 @@ contract OrderBook {
         uint256 amount
     );
     event OrderFilled(bytes32 indexed tradingPair, uint256 indexed orderId, uint256 filledAmount, bool isFullyFilled);
+    event MatchIdChanged(uint256 indexed newMatchId);
 
     /**
      * @notice 设置Sequencer合约地址
@@ -333,6 +338,12 @@ contract OrderBook {
             }
 
             processedCount++;
+        }
+
+        // 处理完成后递增matchId
+        if (processedCount > 0) {
+            matchId++;
+            emit MatchIdChanged(matchId);
         }
 
         return processedCount;
@@ -985,7 +996,12 @@ contract OrderBook {
      * @return totalTrades 成交的交易数量
      */
     function matchOrders(bytes32 tradingPair, uint256 maxIterations) external returns (uint256 totalTrades) {
-        return _matchOrdersInternal(tradingPair, maxIterations);
+        totalTrades = _matchOrdersInternal(tradingPair, maxIterations);
+        if (totalTrades > 0) {
+            matchId++;
+            emit MatchIdChanged(matchId);
+        }
+        return totalTrades;
     }
 
     /**
@@ -1188,7 +1204,12 @@ contract OrderBook {
      * @return totalTrades 成交的交易数量
      */
     function matchMarketOrders(bytes32 tradingPair, uint256 maxIterations) external returns (uint256 totalTrades) {
-        return _matchMarketOrdersInternal(tradingPair, maxIterations);
+        totalTrades = _matchMarketOrdersInternal(tradingPair, maxIterations);
+        if (totalTrades > 0) {
+            matchId++;
+            emit MatchIdChanged(matchId);
+        }
+        return totalTrades;
     }
 
     /**

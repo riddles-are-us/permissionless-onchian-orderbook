@@ -1,6 +1,6 @@
 use ethers::types::{Address, U256};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+// use std::collections::BTreeMap;
 
 /// 请求类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +33,7 @@ pub struct QueuedRequest {
 
 /// 价格层级
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct PriceLevel {
     pub price: U256,
     pub total_volume: U256,
@@ -44,6 +45,7 @@ pub struct PriceLevel {
 
 /// 订单
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct Order {
     pub id: U256,
     pub trader: Address,
@@ -57,6 +59,7 @@ pub struct Order {
 
 /// 订单簿数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct OrderBookData {
     pub ask_head: U256,
     pub ask_tail: U256,
@@ -96,6 +99,8 @@ impl MatchResult {
         self.order_ids.len()
     }
 
+
+
     pub fn add_order(&mut self, order_id: U256, price_level: U256, order: U256) {
         self.order_ids.push(order_id);
         self.insert_after_price_levels.push(price_level);
@@ -103,6 +108,7 @@ impl MatchResult {
     }
 }
 
+/*
 /// 价格层级缓存（用于快速查找）
 #[derive(Debug, Clone)]
 pub struct PriceLevelCache {
@@ -133,3 +139,4 @@ impl PriceLevelCache {
         self.levels.get(level_id)
     }
 }
+*/

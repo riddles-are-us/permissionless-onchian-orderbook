@@ -9,7 +9,6 @@ mod types;
 use anyhow::Result;
 use clap::Parser;
 use tracing::{info, Level};
-use tracing_subscriber;
 
 use crate::config::Config;
 use crate::matcher::MatchingEngine;

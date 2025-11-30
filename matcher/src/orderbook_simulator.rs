@@ -26,6 +26,7 @@ pub struct SimOrder {
     pub id: U256,
     pub amount: U256,
     pub filled_amount: U256,
+    #[allow(dead_code)] // 在模拟器内部未读，但在 sync 中需要
     pub is_market_order: bool,
     pub is_ask: bool,          // 是否为卖单（用于移除订单时确定侧）
     pub price_level: U256,     // 该订单所属的价格
@@ -74,27 +75,6 @@ impl OrderBookSimulator {
             ask_tail: EMPTY,
             bid_head: EMPTY,
             bid_tail: EMPTY,
-            market_ask_head: EMPTY,
-            market_ask_tail: EMPTY,
-            market_bid_head: EMPTY,
-            market_bid_tail: EMPTY,
-            price_levels: HashMap::new(),
-            orders: HashMap::new(),
-        }
-    }
-
-    /// 从链上状态初始化模拟器
-    pub fn from_chain_state(
-        ask_head: U256,
-        ask_tail: U256,
-        bid_head: U256,
-        bid_tail: U256,
-    ) -> Self {
-        Self {
-            ask_head,
-            ask_tail,
-            bid_head,
-            bid_tail,
             market_ask_head: EMPTY,
             market_ask_tail: EMPTY,
             market_bid_head: EMPTY,
@@ -431,7 +411,7 @@ impl OrderBookSimulator {
 
         // 更新价格层级的总挂单量
         if let Some(level) = self.price_levels.get_mut(&level_key) {
-            level.total_volume = level.total_volume + order_amount;
+            level.total_volume += order_amount;
         }
     }
 
@@ -513,10 +493,10 @@ impl OrderBookSimulator {
 
         // 更新订单已成交数量
         if let Some(bid_order) = self.orders.get_mut(&bid_order_id) {
-            bid_order.filled_amount = bid_order.filled_amount + trade_amount;
+            bid_order.filled_amount += trade_amount;
         }
         if let Some(ask_order) = self.orders.get_mut(&ask_order_id) {
-            ask_order.filled_amount = ask_order.filled_amount + trade_amount;
+            ask_order.filled_amount += trade_amount;
         }
 
         // 更新价格层级的总挂单量
@@ -664,6 +644,7 @@ impl OrderBookSimulator {
     }
 
     /// 获取所有价格层级（用于调试）
+    #[cfg(test)]
     pub fn get_price_levels(&self, is_ask: bool) -> Vec<U256> {
         let mut prices = Vec::new();
         let mut current = if is_ask { self.ask_head } else { self.bid_head };
@@ -682,6 +663,7 @@ impl OrderBookSimulator {
     }
 
     /// 获取指定价格层级的订单列表（用于调试）
+    #[cfg(test)]
     pub fn get_orders_at_price(&self, price: U256, is_ask: bool) -> Vec<U256> {
         let mut order_ids = Vec::new();
         let key = Self::get_price_level_key(price, is_ask);
@@ -923,18 +905,18 @@ impl OrderBookSimulator {
         if let Some(order) = self.orders.get_mut(&market_order_id) {
             if is_market_ask {
                 // 市价卖单：filled_amount 是 base tokens
-                order.filled_amount = order.filled_amount + trade_amount;
+                order.filled_amount += trade_amount;
             } else {
                 // 市价买单：filled_amount 是 quote tokens（追踪花费的计价代币）
                 // quote_spent = trade_amount * price / PRICE_DECIMALS
                 let quote_spent = trade_amount * limit_price_level / PRICE_DECIMALS;
-                order.filled_amount = order.filled_amount + quote_spent;
+                order.filled_amount += quote_spent;
             }
         }
 
         // 更新限价单已成交数量 (always in base tokens)
         if let Some(order) = self.orders.get_mut(&limit_order_id) {
-            order.filled_amount = order.filled_amount + trade_amount;
+            order.filled_amount += trade_amount;
         }
 
         // 更新限价单所在价格层级的总挂单量
@@ -973,6 +955,7 @@ impl OrderBookSimulator {
     }
 
     /// 获取市价单列表（用于调试）
+    #[cfg(test)]
     pub fn get_market_orders(&self, is_ask: bool) -> Vec<U256> {
         let mut order_ids = Vec::new();
         let mut current = if is_ask {

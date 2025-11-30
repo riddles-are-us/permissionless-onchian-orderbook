@@ -75,6 +75,9 @@ impl StateSynchronizer {
         // 同步 OrderBook 状态到 GlobalState.orderbook
         self.sync_orderbook_state().await?;
 
+        // 同步 matchId
+        self.sync_match_id().await?;
+
         // 记录同步的区块高度，后续 event 监听从这个区块开始
         self.synced_block = current_block;
         self.state.update_current_block(current_block);
@@ -110,8 +113,8 @@ impl StateSynchronizer {
 
             let next_id = request_data.7;
 
-            let request_type_u8: u8 = request_data.2.try_into().unwrap_or(0);
-            let order_type_u8: u8 = request_data.3.try_into().unwrap_or(0);
+            let request_type_u8: u8 = request_data.2;
+            let order_type_u8: u8 = request_data.3;
 
             let request = QueuedRequest {
                 request_id: current_id,
@@ -163,6 +166,14 @@ impl StateSynchronizer {
             self.sync_trading_pair_orderbook(&trading_pair).await?;
         }
 
+        Ok(())
+    }
+
+    /// 同步 matchId
+    async fn sync_match_id(&self) -> Result<()> {
+        let match_id = self.orderbook.match_id().call().await?;
+        self.state.update_match_id(match_id);
+        info!("  matchId: {}", match_id);
         Ok(())
     }
 
@@ -344,6 +355,7 @@ impl StateSynchronizer {
         let order_inserted_filter = orderbook.event::<OrderInsertedFilter>().from_block(event_start_block);
         let price_level_created_filter = orderbook.event::<PriceLevelCreatedFilter>().from_block(event_start_block);
         let price_level_removed_filter = orderbook.event::<PriceLevelRemovedFilter>().from_block(event_start_block);
+        let match_id_changed_filter = orderbook.event::<MatchIdChangedFilter>().from_block(event_start_block);
 
         // 创建事件流
         let mut trade_stream = trade_filter.stream().await?.take(10000);
@@ -352,6 +364,7 @@ impl StateSynchronizer {
         let mut order_inserted_stream = order_inserted_filter.stream().await?.take(10000);
         let mut price_level_created_stream = price_level_created_filter.stream().await?.take(10000);
         let mut price_level_removed_stream = price_level_removed_filter.stream().await?.take(10000);
+        let mut match_id_changed_stream = match_id_changed_filter.stream().await?.take(10000);
 
         loop {
             tokio::select! {
@@ -391,7 +404,7 @@ impl StateSynchronizer {
                                     level.head_order_id = inserted.order_id;
                                 }
                                 level.tail_order_id = inserted.order_id;
-                                level.total_volume = level.total_volume + inserted.amount;
+                                level.total_volume += inserted.amount;
                             }
 
                             // 创建并插入新订单
@@ -607,6 +620,16 @@ impl StateSynchronizer {
                             orderbook.orders.remove(&removed.order_id);
                         }
                         Err(e) => warn!("Error receiving order removed event: {}", e),
+                    }
+                }
+
+                Some(event) = match_id_changed_stream.next() => {
+                    match event {
+                        Ok(changed) => {
+                            info!("🔄 MatchIdChanged: newMatchId={}", changed.new_match_id);
+                            state.update_match_id(changed.new_match_id);
+                        }
+                        Err(e) => warn!("Error receiving MatchIdChanged event: {}", e),
                     }
                 }
 
