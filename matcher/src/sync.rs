@@ -341,53 +341,61 @@ impl StateSynchronizer {
         Ok(count)
     }
 
-    /// 监听事件
+    /// 监听事件（带重试逻辑）
     async fn watch_events(&self) -> Result<()> {
         // 使用历史同步时的区块高度，确保不会漏掉事件
         let from_block = self.synced_block;
-        info!("👀 Watching for OrderBook and Sequencer events from block {}", from_block);
 
-        // 创建 OrderBook 事件监听任务
-        let orderbook_watcher = {
-            let orderbook = self.orderbook.clone();
-            let state = self.state.clone();
-            let storage = self.storage.clone();
+        loop {
+            info!("👀 Watching for OrderBook and Sequencer events from block {}", from_block);
 
-            tokio::spawn(async move {
-                Self::watch_orderbook_events(orderbook, state, storage, from_block).await
-            })
-        };
+            // 创建 OrderBook 事件监听任务
+            let orderbook_watcher = {
+                let orderbook = self.orderbook.clone();
+                let state = self.state.clone();
+                let storage = self.storage.clone();
 
-        // 创建 Sequencer 事件监听任务
-        let sequencer_watcher = {
-            let sequencer = self.sequencer.clone();
-            let state = self.state.clone();
-            let storage = self.storage.clone();
+                tokio::spawn(async move {
+                    Self::watch_orderbook_events(orderbook, state, storage, from_block).await
+                })
+            };
 
-            tokio::spawn(async move {
-                Self::watch_sequencer_events(sequencer, state, storage, from_block).await
-            })
-        };
+            // 创建 Sequencer 事件监听任务
+            let sequencer_watcher = {
+                let sequencer = self.sequencer.clone();
+                let state = self.state.clone();
+                let storage = self.storage.clone();
 
-        // 等待任一任务完成
-        tokio::select! {
-            result = orderbook_watcher => {
-                match result {
-                    Ok(Ok(_)) => info!("OrderBook watcher completed"),
-                    Ok(Err(e)) => warn!("OrderBook watcher error: {}", e),
-                    Err(e) => warn!("OrderBook watcher task error: {}", e),
+                tokio::spawn(async move {
+                    Self::watch_sequencer_events(sequencer, state, storage, from_block).await
+                })
+            };
+
+            // 等待任一任务完成
+            tokio::select! {
+                result = orderbook_watcher => {
+                    match result {
+                        Ok(Ok(_)) => info!("OrderBook watcher completed normally"),
+                        Ok(Err(e)) => warn!("OrderBook watcher error: {}", e),
+                        Err(e) => warn!("OrderBook watcher task error: {}", e),
+                    }
+                }
+                result = sequencer_watcher => {
+                    match result {
+                        Ok(Ok(_)) => info!("Sequencer watcher completed normally"),
+                        Ok(Err(e)) => warn!("Sequencer watcher error: {}", e),
+                        Err(e) => warn!("Sequencer watcher task error: {}", e),
+                    }
                 }
             }
-            result = sequencer_watcher => {
-                match result {
-                    Ok(Ok(_)) => info!("Sequencer watcher completed"),
-                    Ok(Err(e)) => warn!("Sequencer watcher error: {}", e),
-                    Err(e) => warn!("Sequencer watcher task error: {}", e),
-                }
-            }
+
+            // 任一 watcher 退出后，等待一段时间再重试
+            warn!("⚠️ Event watcher stopped, restarting in 5 seconds...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+            // 重新连接 WebSocket（可能连接已断开）
+            info!("🔄 Reconnecting event watchers...");
         }
-
-        Ok(())
     }
 
     /// 监听 OrderBook 事件并更新 GlobalState
