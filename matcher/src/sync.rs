@@ -782,8 +782,8 @@ impl StateSynchronizer {
                     next_request_id: U256::zero(),
                 };
 
-                state.add_request(request);
-                state.update_queue_head(place_order.request_id);
+                // 添加到队列尾部，维护链表结构
+                state.add_request_to_tail(request);
 
                 if let Some(ref storage) = storage {
                     let stored_order = StoredOrder {
@@ -831,8 +831,8 @@ impl StateSynchronizer {
                     next_request_id: U256::zero(),
                 };
 
-                state.add_request(request);
-                state.update_queue_head(remove_order.request_id);
+                // 添加到队列尾部，维护链表结构
+                state.add_request_to_tail(request);
             }
 
             // 忽略其他事件

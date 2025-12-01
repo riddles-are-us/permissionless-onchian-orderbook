@@ -40,6 +40,12 @@ pub struct SyncConfig {
 pub struct MatchingConfig {
     pub max_batch_size: usize,
     pub matching_interval_ms: u64,
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: u64,
+}
+
+fn default_max_iterations() -> u64 {
+    50
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

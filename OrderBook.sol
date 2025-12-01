@@ -1278,4 +1278,28 @@ contract OrderBook {
         return totalTrades;
     }
 
+    /**
+     * @notice 综合撮合接口，先撮合限价单再撮合市价单
+     * @dev 供 matcher 使用，当 maxIteration 达到后继续撮合剩余可匹配的订单
+     * @param tradingPair 交易对标识符
+     * @param maxIterations 最大撮合次数（限价单和市价单各自的最大次数）
+     * @return limitTrades 限价单成交数量
+     * @return marketTrades 市价单成交数量
+     */
+    function matchAll(bytes32 tradingPair, uint256 maxIterations) external returns (uint256 limitTrades, uint256 marketTrades) {
+        // 先撮合限价单
+        limitTrades = _matchOrdersInternal(tradingPair, maxIterations);
+
+        // 再撮合市价单
+        marketTrades = _matchMarketOrdersInternal(tradingPair, maxIterations);
+
+        // 只有在有成交时才更新 matchId
+        if (limitTrades > 0 || marketTrades > 0) {
+            matchId++;
+            emit MatchIdChanged(matchId);
+        }
+
+        return (limitTrades, marketTrades);
+    }
+
 }

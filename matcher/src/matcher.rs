@@ -12,6 +12,7 @@ pub struct MatchingEngine {
     config: Config,
     state: GlobalState,
     orderbook: OrderBook<SignerMiddleware<Arc<Provider<Ws>>, LocalWallet>>,
+    trading_pair: [u8; 32],
 }
 
 impl MatchingEngine {
@@ -36,10 +37,25 @@ impl MatchingEngine {
         let orderbook_addr: Address = config.contracts.orderbook.parse()?;
         let orderbook = OrderBook::new(orderbook_addr, Arc::new(client));
 
+        // 解析 trading_pair
+        let trading_pair_str = &config.contracts.trading_pair;
+        let trading_pair = if trading_pair_str.starts_with("0x") {
+            let bytes = hex::decode(&trading_pair_str[2..])
+                .context("Failed to decode trading_pair hex")?;
+            let mut arr = [0u8; 32];
+            if bytes.len() == 32 {
+                arr.copy_from_slice(&bytes);
+            }
+            arr
+        } else {
+            [0u8; 32]
+        };
+
         Ok(Self {
             config,
             state,
             orderbook,
+            trading_pair,
         })
     }
 
@@ -71,9 +87,8 @@ impl MatchingEngine {
         }
     }
 
-    /// 处理一批请求
-    async fn process_batch(&self) -> Result<usize> {
-        // 检查 matchId 是否同步
+    /// 检查 matchId 是否同步
+    async fn check_match_id_synced(&self) -> Result<bool> {
         let local_match_id = self.state.get_match_id();
         let chain_match_id = self.orderbook.match_id().call().await?;
 
@@ -82,6 +97,77 @@ impl MatchingEngine {
                 "⚠️  matchId mismatch: local={}, chain={}. Waiting for sync...",
                 local_match_id, chain_match_id
             );
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// 尝试调用 matchAll() 继续撮合未完成的订单
+    async fn try_match_all(&self) -> Result<()> {
+        // 检查是否有可撮合的订单
+        let (has_limit, has_market) = self.state.has_matchable_orders();
+
+        if !has_limit && !has_market {
+            return Ok(());
+        }
+
+        info!(
+            "🔄 Found matchable orders (limit={}, market={}), calling matchAll...",
+            has_limit, has_market
+        );
+
+        // 调用 matchAll，使用配置中的 max_iterations
+        let max_iterations = U256::from(self.config.matching.max_iterations);
+        let tx = self
+            .orderbook
+            .match_all(self.trading_pair, max_iterations)
+            .gas_price(self.config.executor.gas_price_gwei * 1_000_000_000)
+            .gas(self.config.executor.gas_limit);
+
+        let pending_tx = tx.send().await.context("Failed to send matchAll transaction")?;
+        let tx_hash = pending_tx.tx_hash();
+
+        info!("📝 matchAll transaction sent: {:?}", tx_hash);
+
+        match pending_tx.await {
+            Ok(Some(receipt)) => {
+                if receipt.status == Some(1.into()) {
+                    info!(
+                        "✅ matchAll confirmed: {:?}, {} events emitted",
+                        tx_hash,
+                        receipt.logs.len()
+                    );
+                } else {
+                    warn!("❌ matchAll transaction failed: {:?}", tx_hash);
+                }
+            }
+            Ok(None) => {
+                warn!("❌ matchAll transaction dropped: {:?}", tx_hash);
+            }
+            Err(e) => {
+                warn!("❌ Error waiting for matchAll transaction: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 处理一批请求
+    async fn process_batch(&self) -> Result<usize> {
+        // 检查 matchId 是否同步
+        if !self.check_match_id_synced().await? {
+            return Ok(0);
+        }
+
+        // 检查是否有未撮合完的订单（可能是上次 maxIteration 导致的）
+        // 如果有，先调用 matchAll() 继续撮合
+        if let Err(e) = self.try_match_all().await {
+            warn!("Error calling matchAll: {}", e);
+            // 继续处理，不阻塞
+        }
+
+        // matchAll 可能改变了 matchId，需要重新检查同步状态
+        if !self.check_match_id_synced().await? {
             return Ok(0);
         }
 

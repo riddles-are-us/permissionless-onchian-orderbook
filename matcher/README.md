@@ -117,6 +117,7 @@ account = "0x..."
 [matching]
 max_batch_size = 10
 matching_interval_ms = 3000
+max_iterations = 50  # matchAll 调用时的最大撮合次数
 
 [executor]
 private_key = "0x..."
