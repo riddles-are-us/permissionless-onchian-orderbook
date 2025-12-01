@@ -4,25 +4,28 @@
 [network]
 # RPC WebSocket 端点
 # 本地节点: ws://localhost:8545
-# Infura: wss://mainnet.infura.io/ws/v3/YOUR-PROJECT-ID
-rpc_url = "ws://localhost:8545"
+# Alchemy Sepolia: wss://eth-sepolia.g.alchemy.com/v2/YOUR-API-KEY
+rpc_url = "wss://eth-sepolia.g.alchemy.com/v2/P2hms_foHU-rHhmt8hcpU"
 
 # 链 ID
 # 以太坊主网: 1
 # Goerli: 5
 # Sepolia: 11155111
 # Hardhat/Anvil: 31337
-chain_id = 31337
+chain_id = 11155111
 
 [contracts]
-# Sequencer 合约地址
-sequencer = "0x5991A2dF15A8F6A256D3Ec51E99254Cd3fb576A9"
+# Sequencer 合约地址 (Sepolia - 带 matchAll 功能)
+sequencer = "0xBAA2D96a3CE32EECdecCDF02136654cF01c06776"
 
-# OrderBook 合约地址
-orderbook = "0xc7183455a4C133Ae270771860664b6B7ec320bB1"
+# OrderBook 合约地址 (Sepolia - 带 matchAll 功能)
+orderbook = "0x8e627Fc5D660D327C7e24465EB44430cf3e9Cf58"
 
-# Account 合约地址
-account = "0xF62849F9A0B5Bf2913b396098F7c7019b51A820a"
+# Account 合约地址 (Sepolia - 带 matchAll 功能)
+account = "0x0fc28F3D6b8395a618C8fe8290cC5A680f0662dB"
+
+# Trading Pair ID (WETH/USDC)
+trading_pair = "0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816"
 
 [sync]
 # 初始同步的起始区块
@@ -60,3 +63,17 @@ gas_price_gwei = 1
 # Gas 限制
 # 建议预留充足的 gas
 gas_limit = 5000000
+
+[mongodb]
+# 启用 MongoDB 持久化存储
+# 需要安装 MongoDB 或使用 Docker: docker-compose up -d mongodb
+enabled = false
+uri = "mongodb://localhost:27017"
+database = "orderbook"
+
+[api]
+# 启用 HTTP API 服务器
+# 依赖 MongoDB，提供 REST API 查询订单和交易数据
+enabled = false
+host = "127.0.0.1"
+port = 8080
