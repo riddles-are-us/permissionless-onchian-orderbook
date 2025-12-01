@@ -66,7 +66,42 @@ impl GlobalState {
         *self.queue_head.write() = new_head;
     }
 
-    /// 添加请求到队列
+    /// 添加请求到队列尾部（维护链表结构）
+    /// 如果队列为空，同时更新 queue_head
+    pub fn add_request_to_tail(&self, request: QueuedRequest) {
+        let request_id = request.request_id;
+
+        // 如果队列为空，设置为队列头部
+        let current_head = *self.queue_head.read();
+        if current_head.is_zero() {
+            *self.queue_head.write() = request_id;
+            self.queued_requests.insert(request_id, request);
+            return;
+        }
+
+        // 找到队列尾部，更新链表
+        // 遍历找到尾部请求
+        let mut current = current_head;
+        let mut tail = current_head;
+        while !current.is_zero() {
+            tail = current;
+            if let Some(req) = self.queued_requests.get(&current) {
+                current = req.next_request_id;
+            } else {
+                break;
+            }
+        }
+
+        // 更新尾部请求的 next_request_id
+        if let Some(mut tail_request) = self.queued_requests.get_mut(&tail) {
+            tail_request.next_request_id = request_id;
+        }
+
+        // 添加新请求
+        self.queued_requests.insert(request_id, request);
+    }
+
+    /// 添加请求到队列（不维护链表，用于历史同步）
     pub fn add_request(&self, request: QueuedRequest) {
         self.queued_requests.insert(request.request_id, request);
     }
@@ -94,5 +129,11 @@ impl GlobalState {
     /// 更新 matchId
     pub fn update_match_id(&self, new_match_id: U256) {
         *self.match_id.write() = new_match_id;
+    }
+
+    /// 检查是否有可撮合的订单
+    /// 返回 (has_matchable_limit_orders, has_matchable_market_orders)
+    pub fn has_matchable_orders(&self) -> (bool, bool) {
+        self.orderbook.read().has_matchable_orders()
     }
 }

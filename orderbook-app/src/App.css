@@ -1,3 +1,13 @@
+:root {
+  --background-color: #121212;
+  --surface-color: #1e1e1e;
+  --primary-color: #00aaff;
+  --primary-hover-color: #0088cc;
+  --text-color: #e0e0e0;
+  --text-secondary-color: #a0a0a0;
+  --border-color: #2a2a2a;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -10,6 +20,8 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background-color: var(--background-color);
+  color: var(--text-color);
 }
 
 .app {
@@ -190,4 +202,36 @@ body {
   50% {
     opacity: 0.5;
   }
+}
+
+/* Global Footer Styles (moved from Home.css) */
+.home-footer {
+  width: 100%;
+  max-width: 1200px;
+  text-align: center;
+  padding: 40px 0;
+  margin-top: 60px;
+  border-top: 1px solid var(--border-color);
+  color: var(--text-secondary-color);
+}
+
+.footer-links {
+  margin-top: 20px;
+}
+
+.footer-links a {
+  color: var(--primary-color);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.footer-links a:hover {
+  color: var(--primary-hover-color);
+  text-decoration: underline;
+}
+
+.footer-links span {
+  margin: 0 12px;
+  color: var(--text-secondary-color);
 }

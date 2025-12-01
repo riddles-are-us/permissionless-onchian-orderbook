@@ -954,6 +954,32 @@ impl OrderBookSimulator {
         true
     }
 
+    /// 检查是否有可撮合的订单
+    /// 返回 (has_matchable_limit_orders, has_matchable_market_orders)
+    pub fn has_matchable_orders(&self) -> (bool, bool) {
+        // 检查限价单：bid_head >= ask_head
+        let has_matchable_limit = if !self.bid_head.is_zero() && !self.ask_head.is_zero() {
+            let bid_key = Self::get_price_level_key(self.bid_head, false);
+            let ask_key = Self::get_price_level_key(self.ask_head, true);
+
+            if let (Some(bid_level), Some(ask_level)) =
+                (self.price_levels.get(&bid_key), self.price_levels.get(&ask_key))
+            {
+                bid_level.price >= ask_level.price
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        // 检查市价单：有市价买单且有限价卖单，或有市价卖单且有限价买单
+        let has_matchable_market = (!self.market_bid_head.is_zero() && !self.ask_head.is_zero())
+            || (!self.market_ask_head.is_zero() && !self.bid_head.is_zero());
+
+        (has_matchable_limit, has_matchable_market)
+    }
+
     /// 获取市价单列表（用于调试）
     #[cfg(test)]
     pub fn get_market_orders(&self, is_ask: bool) -> Vec<U256> {

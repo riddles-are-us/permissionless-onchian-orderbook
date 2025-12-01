@@ -379,6 +379,10 @@ batchProcessRequests()
 以下函数可用于手动触发撮合，通常不需要调用：
 
 ```solidity
+// 综合撮合（先限价单后市价单）- 推荐使用
+function matchAll(bytes32 tradingPair, uint256 maxIterations)
+    external returns (uint256 limitTrades, uint256 marketTrades)
+
 // 手动撮合限价单
 function matchOrders(bytes32 tradingPair, uint256 maxIterations) external returns (uint256)
 
@@ -386,7 +390,13 @@ function matchOrders(bytes32 tradingPair, uint256 maxIterations) external return
 function matchMarketOrders(bytes32 tradingPair, uint256 maxIterations) external returns (uint256)
 ```
 
-**使用场景**：当自动撮合因 gas 限制未完全执行时，可手动补充撮合。
+**使用场景**：当自动撮合因 `maxIteration` 限制未完全执行时，Matcher 会自动调用 `matchAll()` 继续撮合剩余的可匹配订单。
+
+**`matchAll()` 函数说明**：
+- 先调用 `_matchOrdersInternal()` 撮合限价单
+- 再调用 `_matchMarketOrdersInternal()` 撮合市价单
+- 只有在有成交时才更新 `matchId`
+- 返回限价单和市价单的成交数量
 
 ### 撮合事件
 
