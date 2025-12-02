@@ -5,8 +5,8 @@ use crate::state::GlobalState;
 use crate::storage::{MongoStorage, OrderStatus, StoredOrder, StoredOrderType};
 use crate::types::*;
 use anyhow::{Context, Result};
-use chrono::Utc;
 use ethers::prelude::*;
+use mongodb::bson::DateTime as BsonDateTime;
 use futures::stream::StreamExt;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -365,8 +365,8 @@ impl StateSynchronizer {
                     amount: sim_order.amount.to_string(),
                     filled_amount: sim_order.filled_amount.to_string(),
                     status,
-                    created_at: Utc::now(),
-                    updated_at: Utc::now(),
+                    created_at: BsonDateTime::now(),
+                    updated_at: BsonDateTime::now(),
                     block_number: self.synced_block,
                     tx_hash: None,
                 };
@@ -849,8 +849,8 @@ impl StateSynchronizer {
                         amount: place_order.amount.to_string(),
                         filled_amount: "0".to_string(),
                         status: OrderStatus::Pending,
-                        created_at: Utc::now(),
-                        updated_at: Utc::now(),
+                        created_at: BsonDateTime::now(),
+                        updated_at: BsonDateTime::now(),
                         block_number: from_block,
                         tx_hash: None,
                     };

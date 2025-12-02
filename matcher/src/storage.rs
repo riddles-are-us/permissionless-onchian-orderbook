@@ -1,12 +1,48 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use mongodb::{
-    bson::doc,
+    bson::{doc, DateTime as BsonDateTime},
     options::{ClientOptions, IndexOptions},
     Client, Collection, IndexModel,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
+
+/// 自定义序列化模块：将 BsonDateTime 序列化为 ISO 8601 字符串
+mod bson_datetime_as_iso8601 {
+    use mongodb::bson::DateTime as BsonDateTime;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(date: &BsonDateTime, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // 使用 try_to_rfc3339_string 转换为 ISO 8601 格式
+        let iso_string = date
+            .try_to_rfc3339_string()
+            .map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(&iso_string)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<BsonDateTime, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // 尝试从 ISO 8601 字符串或 BSON DateTime 反序列化
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum DateTimeFormat {
+            String(String),
+            Bson(BsonDateTime),
+        }
+
+        match DateTimeFormat::deserialize(deserializer)? {
+            DateTimeFormat::String(s) => {
+                BsonDateTime::parse_rfc3339_str(&s).map_err(serde::de::Error::custom)
+            }
+            DateTimeFormat::Bson(dt) => Ok(dt),
+        }
+    }
+}
 
 /// 订单状态
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -59,10 +95,12 @@ pub struct StoredOrder {
     pub status: OrderStatus,
 
     /// 创建时间 (区块时间戳或事件时间)
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "bson_datetime_as_iso8601")]
+    pub created_at: BsonDateTime,
 
     /// 最后更新时间
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "bson_datetime_as_iso8601")]
+    pub updated_at: BsonDateTime,
 
     /// 创建时的区块高度
     pub block_number: u64,
@@ -100,7 +138,8 @@ pub struct StoredTrade {
     pub amount: String,
 
     /// 成交时间
-    pub traded_at: DateTime<Utc>,
+    #[serde(with = "bson_datetime_as_iso8601")]
+    pub traded_at: BsonDateTime,
 
     /// 区块高度
     pub block_number: u64,
@@ -307,21 +346,13 @@ impl MongoStorage {
         Ok(collection.find_one(filter, None).await?)
     }
 
-    /// 查询用户的交易历史
-    pub async fn get_trades_by_trader(
+    /// 查询所有交易历史
+    pub async fn get_trades(
         &self,
-        trader: &str,
         limit: i64,
         offset: u64,
     ) -> Result<Vec<StoredTrade>> {
         let collection = self.trades_collection();
-
-        let filter = doc! {
-            "$or": [
-                { "buyer": trader.to_lowercase() },
-                { "seller": trader.to_lowercase() }
-            ]
-        };
 
         let options = mongodb::options::FindOptions::builder()
             .sort(doc! { "traded_at": -1 })
@@ -329,7 +360,7 @@ impl MongoStorage {
             .limit(limit)
             .build();
 
-        let mut cursor = collection.find(filter, options).await?;
+        let mut cursor = collection.find(doc! {}, options).await?;
         let mut trades = Vec::new();
 
         while cursor.advance().await? {
@@ -337,6 +368,36 @@ impl MongoStorage {
         }
 
         Ok(trades)
+    }
+
+    /// 查询所有订单（可选按状态筛选）
+    pub async fn get_orders(
+        &self,
+        status: Option<OrderStatus>,
+        limit: i64,
+        offset: u64,
+    ) -> Result<Vec<StoredOrder>> {
+        let collection = self.orders_collection();
+
+        let filter = match status {
+            Some(s) => doc! { "status": mongodb::bson::to_bson(&s)? },
+            None => doc! {},
+        };
+
+        let options = mongodb::options::FindOptions::builder()
+            .sort(doc! { "created_at": -1 })
+            .skip(offset)
+            .limit(limit)
+            .build();
+
+        let mut cursor = collection.find(filter, options).await?;
+        let mut orders = Vec::new();
+
+        while cursor.advance().await? {
+            orders.push(cursor.deserialize_current()?);
+        }
+
+        Ok(orders)
     }
 
     /// 根据交易对查询订单簿 (活跃的限价单)
