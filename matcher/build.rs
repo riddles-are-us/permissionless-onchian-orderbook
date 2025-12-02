@@ -34,6 +34,7 @@ fn main() {
     let account = deployments["account"].as_str().unwrap_or("");
     let orderbook = deployments["orderbook"].as_str().unwrap_or("");
     let sequencer = deployments["sequencer"].as_str().unwrap_or("");
+    let deployment_block = deployments["deploymentBlock"].as_u64();
 
     if account.is_empty() || orderbook.is_empty() || sequencer.is_empty() {
         println!("cargo:warning=Missing contract addresses in deployments.json");
@@ -50,8 +51,8 @@ fn main() {
         }
     };
 
-    // 更新地址
-    let updated_config = update_contract_addresses(&config_content, account, orderbook, sequencer);
+    // 更新地址和部署区块
+    let updated_config = update_config(&config_content, account, orderbook, sequencer, deployment_block);
 
     // 写回 config.toml
     if let Err(e) = fs::write(config_path, updated_config) {
@@ -63,9 +64,12 @@ fn main() {
     println!("cargo:warning=  Account:   {}", account);
     println!("cargo:warning=  OrderBook: {}", orderbook);
     println!("cargo:warning=  Sequencer: {}", sequencer);
+    if let Some(block) = deployment_block {
+        println!("cargo:warning=  Start Block: {}", block);
+    }
 }
 
-fn update_contract_addresses(config: &str, account: &str, orderbook: &str, sequencer: &str) -> String {
+fn update_config(config: &str, account: &str, orderbook: &str, sequencer: &str, deployment_block: Option<u64>) -> String {
     let mut result = String::new();
 
     for line in config.lines() {
@@ -75,6 +79,14 @@ fn update_contract_addresses(config: &str, account: &str, orderbook: &str, seque
             result.push_str(&format!("orderbook = \"{}\"\n", orderbook));
         } else if line.trim_start().starts_with("sequencer =") {
             result.push_str(&format!("sequencer = \"{}\"\n", sequencer));
+        } else if line.trim_start().starts_with("start_block =") {
+            // 只在有 deployment_block 时更新
+            if let Some(block) = deployment_block {
+                result.push_str(&format!("start_block = {}\n", block));
+            } else {
+                result.push_str(line);
+                result.push('\n');
+            }
         } else {
             result.push_str(line);
             result.push('\n');

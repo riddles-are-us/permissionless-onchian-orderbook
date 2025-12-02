@@ -69,6 +69,8 @@ contract DeployScript is Script {
         vm.stopBroadcast();
 
         // 7. Save deployment info
+        uint256 deploymentBlock = block.number;
+
         console.log("\n=== Deployment Summary ===");
         console.log("WETH:     ", weth);
         console.log("USDC:     ", usdc);
@@ -76,6 +78,7 @@ contract DeployScript is Script {
         console.log("OrderBook:", orderbook);
         console.log("Sequencer:", sequencer);
         console.log("Pair ID:  ", vm.toString(pairId));
+        console.log("Block:    ", deploymentBlock);
 
         // Save to file for matcher to use
         string memory json = string.concat(
@@ -86,7 +89,8 @@ contract DeployScript is Script {
             '  "orderbook": "', vm.toString(orderbook), '",\n',
             '  "sequencer": "', vm.toString(sequencer), '",\n',
             '  "pairId": "', vm.toString(pairId), '",\n',
-            '  "deployer": "', vm.toString(deployer), '"\n',
+            '  "deployer": "', vm.toString(deployer), '",\n',
+            '  "deploymentBlock": ', vm.toString(deploymentBlock), '\n',
             '}'
         );
 

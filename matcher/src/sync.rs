@@ -36,15 +36,57 @@ impl StateSynchronizer {
         let sequencer = Sequencer::new(sequencer_addr, provider.clone());
         let orderbook = OrderBook::new(orderbook_addr, provider.clone());
 
+        // 确定起始区块：如果配置为0，则自动检测合约部署区块
+        let start_block = if config.sync.start_block == 0 {
+            let deployment_block = Self::get_contract_deployment_block(&provider, orderbook_addr).await?;
+            info!("🔍 Auto-detected OrderBook deployment block: {}", deployment_block);
+            deployment_block
+        } else {
+            config.sync.start_block
+        };
+
         Ok(Self {
             config,
             state: GlobalState::new(),
             provider,
             sequencer,
             orderbook,
-            synced_block: 0,
+            synced_block: start_block,
             storage,
         })
+    }
+
+    /// 获取合约部署区块（通过二分查找）
+    async fn get_contract_deployment_block(
+        provider: &Provider<Ws>,
+        contract_addr: Address,
+    ) -> Result<u64> {
+        let current_block = provider.get_block_number().await?.as_u64();
+
+        // 检查合约是否存在
+        let code = provider.get_code(contract_addr, None).await?;
+        if code.is_empty() {
+            anyhow::bail!("Contract not deployed at address {:?}", contract_addr);
+        }
+
+        // 二分查找部署区块
+        let mut low: u64 = 0;
+        let mut high = current_block;
+
+        while low < high {
+            let mid = (low + high) / 2;
+            let code_at_mid = provider
+                .get_code(contract_addr, Some(BlockId::Number(mid.into())))
+                .await?;
+
+            if code_at_mid.is_empty() {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+
+        Ok(low)
     }
 
     /// 获取 storage 的引用
