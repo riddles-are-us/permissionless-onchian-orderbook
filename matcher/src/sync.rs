@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::contracts::{OrderBook, Sequencer};
 use crate::orderbook_simulator::{SimOrder, SimPriceLevel};
 use crate::state::GlobalState;
-use crate::storage::{MongoStorage, OrderStatus, StoredOrder, StoredOrderType};
+use crate::storage::{MongoStorage, OrderStatus, StoredOrder, StoredOrderType, StoredTrade};
 use crate::types::*;
 use anyhow::{Context, Result};
 use ethers::prelude::*;
@@ -105,11 +105,33 @@ impl StateSynchronizer {
         // 第一步：同步历史状态
         if self.config.sync.sync_historical {
             self.sync_historical_state().await?;
+        } else {
+            // 即使不同步历史，也需要同步 matchId 和当前区块
+            self.sync_minimal_state().await?;
         }
 
         // 第二步：监听事件
         self.watch_events().await?;
 
+        Ok(())
+    }
+
+    /// 最小化同步：只同步 matchId 和当前区块高度
+    async fn sync_minimal_state(&mut self) -> Result<()> {
+        let current_block = self.provider.get_block_number().await?.as_u64();
+        info!("📚 Minimal sync: getting current matchId at block {}", current_block);
+
+        // 同步 matchId
+        self.sync_match_id().await?;
+
+        // 同步 OrderBook 状态到 GlobalState.orderbook
+        self.sync_orderbook_state().await?;
+
+        // 更新同步区块
+        self.synced_block = current_block;
+        self.state.update_current_block(current_block);
+
+        info!("✅ Minimal sync completed at block {}", current_block);
         Ok(())
     }
 
@@ -677,6 +699,38 @@ impl StateSynchronizer {
                     trade.price,
                     trade.amount
                 );
+
+                // Save trade to MongoDB
+                if let Some(ref storage) = storage {
+                    let trading_pair_hex = format!("0x{}", hex::encode(trade.trading_pair));
+                    let stored_trade = StoredTrade {
+                        trade_id: format!(
+                            "{}-{}-{}",
+                            trading_pair_hex,
+                            trade.buy_order_id,
+                            trade.sell_order_id
+                        ),
+                        trading_pair: trading_pair_hex,
+                        buy_order_id: trade.buy_order_id.to_string(),
+                        sell_order_id: trade.sell_order_id.to_string(),
+                        buyer: format!("{:?}", trade.buyer),
+                        seller: format!("{:?}", trade.seller),
+                        price: trade.price.to_string(),
+                        amount: trade.amount.to_string(),
+                        traded_at: BsonDateTime::now(),
+                        block_number: 0, // Not available from event stream directly
+                        tx_hash: None,
+                    };
+
+                    if let Err(e) = storage.insert_trade(&stored_trade).await {
+                        warn!("Failed to save trade to MongoDB: {}", e);
+                    } else {
+                        info!(
+                            "💾 Trade saved: buy={}, sell={}",
+                            trade.buy_order_id, trade.sell_order_id
+                        );
+                    }
+                }
             }
 
             OrderBookEvents::OrderFilledFilter(filled) => {
