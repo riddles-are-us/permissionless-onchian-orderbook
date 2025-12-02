@@ -68,6 +68,13 @@ impl MatchingEngine {
             self.config.matching.matching_interval_ms
         );
 
+        // 等待历史同步完成
+        info!("⏳ Waiting for historical sync to complete...");
+        while !self.state.is_sync_completed() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        info!("✅ Historical sync completed, starting to process requests");
+
         let interval = Duration::from_millis(self.config.matching.matching_interval_ms);
         let mut ticker = tokio::time::interval(interval);
 

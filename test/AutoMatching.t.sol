@@ -149,8 +149,8 @@ contract AutoMatchingTest is Test {
                 console.log("\n  [OK] Trade event emitted");
             }
 
-            // OrderFilled event signature
-            if (eventSig == keccak256("OrderFilled(bytes32,uint256,uint256,bool)")) {
+            // OrderFilled event signature (bytes32 tradingPair, uint256 orderId, uint256 quoteAmount, uint256 baseAmount, bool isFullyFilled)
+            if (eventSig == keccak256("OrderFilled(bytes32,uint256,uint256,uint256,bool)")) {
                 uint256 filledOrderId = uint256(entries[i].topics[2]);
                 if (filledOrderId == buyOrderId) {
                     buyOrderFilledFound = true;

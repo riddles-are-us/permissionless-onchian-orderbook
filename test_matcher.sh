@@ -60,6 +60,7 @@ ORDERBOOK=$(jq -r '.orderbook' deployments.json)
 SEQUENCER=$(jq -r '.sequencer' deployments.json)
 WETH=$(jq -r '.weth' deployments.json)
 USDC=$(jq -r '.usdc' deployments.json)
+PAIR_ID=$(jq -r '.pairId' deployments.json)
 
 echo "📋 已部署合约:"
 echo "  WETH:      $WETH"
@@ -96,6 +97,7 @@ chain_id = $CHAIN_ID
 account = "$ACCOUNT"
 orderbook = "$ORDERBOOK"
 sequencer = "$SEQUENCER"
+trading_pair = "$PAIR_ID"
 
 [executor]
 private_key = "$DEPLOYER_KEY"
