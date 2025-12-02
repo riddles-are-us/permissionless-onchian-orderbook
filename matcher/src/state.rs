@@ -3,6 +3,7 @@ use crate::types::*;
 use dashmap::DashMap;
 use ethers::types::U256;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 全局状态（线程安全）
 #[derive(Clone)]
@@ -22,6 +23,9 @@ pub struct GlobalState {
 
     /// 链上 matchId，用于检测状态同步
     pub match_id: Arc<parking_lot::RwLock<U256>>,
+
+    /// 历史同步是否完成（MatchingEngine 需要等待此标志）
+    pub sync_completed: Arc<AtomicBool>,
 }
 
 impl GlobalState {
@@ -32,7 +36,18 @@ impl GlobalState {
             orderbook: Arc::new(parking_lot::RwLock::new(OrderBookSimulator::new())),
             current_block: Arc::new(parking_lot::RwLock::new(0)),
             match_id: Arc::new(parking_lot::RwLock::new(U256::zero())),
+            sync_completed: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// 标记历史同步已完成
+    pub fn mark_sync_completed(&self) {
+        self.sync_completed.store(true, Ordering::SeqCst);
+    }
+
+    /// 检查历史同步是否已完成
+    pub fn is_sync_completed(&self) -> bool {
+        self.sync_completed.load(Ordering::SeqCst)
     }
 
     /// 获取队列中的前 N 个请求

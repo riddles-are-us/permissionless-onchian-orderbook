@@ -132,6 +132,11 @@ impl StateSynchronizer {
         self.state.update_current_block(current_block);
 
         info!("✅ Minimal sync completed at block {}", current_block);
+
+        // 标记同步完成，允许 MatchingEngine 开始处理
+        self.state.mark_sync_completed();
+        info!("🟢 Sync completed, MatchingEngine can start processing");
+
         Ok(())
     }
 
@@ -162,6 +167,10 @@ impl StateSynchronizer {
 
         info!("✅ Historical state synced at block {}", current_block);
         info!("   Event monitoring will start from block {}", current_block);
+
+        // 标记历史同步完成，允许 MatchingEngine 开始处理
+        self.state.mark_sync_completed();
+        info!("🟢 Sync completed, MatchingEngine can start processing");
 
         Ok(())
     }
@@ -366,10 +375,28 @@ impl StateSynchronizer {
                 OrderStatus::PartiallyFilled
             };
 
+            // 查询订单来判断是否是市价买单
+            // 市价买单：filled_amount 对应 quote_amount
+            // 其他订单：filled_amount 对应 base_amount
+            let filled_amount = match storage.get_order_by_id(&filled.order_id.to_string()).await {
+                Ok(Some(order)) => {
+                    let is_market_bid = matches!(order.order_type, StoredOrderType::Market) && !order.is_ask;
+                    if is_market_bid {
+                        filled.quote_amount.to_string()
+                    } else {
+                        filled.base_amount.to_string()
+                    }
+                }
+                _ => {
+                    // 如果查不到订单信息，默认使用 base_amount
+                    filled.base_amount.to_string()
+                }
+            };
+
             if let Err(e) = storage.update_order_status(
                 &filled.order_id.to_string(),
                 status,
-                Some(&filled.filled_amount.to_string()),
+                Some(&filled_amount),
             ).await {
                 warn!("Failed to update historical order status: {}", e);
             }
@@ -877,11 +904,28 @@ impl StateSynchronizer {
 
             OrderBookEvents::OrderFilledFilter(filled) => {
                 info!(
-                    "✅ OrderFilled: order={}, filled={}, fully_filled={}",
+                    "✅ OrderFilled: order={}, quote={}, base={}, fully_filled={}",
                     filled.order_id,
-                    filled.filled_amount,
+                    filled.quote_amount,
+                    filled.base_amount,
                     filled.is_fully_filled
                 );
+
+                // 根据订单类型决定 filled_amount 使用 quote 还是 base
+                // 市价买单：filled_amount 对应 quote_amount
+                // 其他订单：filled_amount 对应 base_amount
+                let is_market_bid = {
+                    let orderbook = state.orderbook.read();
+                    orderbook.orders.get(&filled.order_id)
+                        .map(|o| o.is_market_order && !o.is_ask)
+                        .unwrap_or(false)
+                };
+
+                let filled_increment = if is_market_bid {
+                    filled.quote_amount
+                } else {
+                    filled.base_amount
+                };
 
                 {
                     let mut orderbook = state.orderbook.write();
@@ -889,7 +933,7 @@ impl StateSynchronizer {
                         orderbook.orders.remove(&filled.order_id);
                     } else {
                         if let Some(order) = orderbook.orders.get_mut(&filled.order_id) {
-                            order.filled_amount = filled.filled_amount;
+                            order.filled_amount += filled_increment;
                         }
                     }
                 }
@@ -903,7 +947,7 @@ impl StateSynchronizer {
                     if let Err(e) = storage.update_order_status(
                         &filled.order_id.to_string(),
                         status,
-                        Some(&filled.filled_amount.to_string()),
+                        Some(&filled_increment.to_string()),
                     ).await {
                         warn!("Failed to update order in MongoDB: {}", e);
                     }

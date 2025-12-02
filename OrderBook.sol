@@ -83,7 +83,7 @@ contract OrderBook {
         uint256 price,
         uint256 amount
     );
-    event OrderFilled(bytes32 indexed tradingPair, uint256 indexed orderId, uint256 filledAmount, bool isFullyFilled);
+    event OrderFilled(bytes32 indexed tradingPair, uint256 indexed orderId, uint256 quoteAmount, uint256 baseAmount, bool isFullyFilled);
     event MatchIdChanged(uint256 indexed newMatchId);
 
     /**
@@ -1149,19 +1149,24 @@ contract OrderBook {
             tradeAmount
         );
 
+        // 计算 quote amount (用于事件)
+        uint256 quoteAmount = (tradeAmount * tradePrice) / TradingConstants.PRICE_DECIMALS;
+
         // 检查买单是否完全成交
         bool bidFullyFilled = (bidOrder.filledAmount == bidOrder.amount);
         if (bidFullyFilled) {
             _removeFilledOrder(tradingPair, bidOrderId, false);
         }
-        emit OrderFilled(tradingPair, bidOrderId, bidFilledIncrement, bidFullyFilled);
+        // 买单: quoteAmount=花费的quote tokens, baseAmount=获得的base tokens
+        emit OrderFilled(tradingPair, bidOrderId, quoteAmount, tradeAmount, bidFullyFilled);
 
         // 检查卖单是否完全成交
         bool askFullyFilled = (askOrder.filledAmount == askOrder.amount);
         if (askFullyFilled) {
             _removeFilledOrder(tradingPair, askOrderId, true);
         }
-        emit OrderFilled(tradingPair, askOrderId, tradeAmount, askFullyFilled);
+        // 卖单: quoteAmount=获得的quote tokens, baseAmount=卖出的base tokens
+        emit OrderFilled(tradingPair, askOrderId, quoteAmount, tradeAmount, askFullyFilled);
 
         return true;
     }
