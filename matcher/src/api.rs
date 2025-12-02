@@ -266,12 +266,14 @@ async fn get_system_overview(
     while !current_price.is_zero() && count < 10 {
         let key = if true { current_price } else { current_price | (U256::one() << 255) };
         if let Some(level) = orderbook.price_levels.get(&key) {
-            // 统计该价格层级的订单数量
+            // 统计该价格层级的订单数量和剩余量
             let mut order_count = 0;
+            let mut remaining_volume = U256::zero();
             let mut order_id = level.head_order_id;
             while !order_id.is_zero() {
                 order_count += 1;
                 if let Some(order) = orderbook.orders.get(&order_id) {
+                    remaining_volume += order.amount - order.filled_amount;
                     order_id = order.next_order_id;
                 } else {
                     break;
@@ -279,7 +281,7 @@ async fn get_system_overview(
             }
             asks.push(OverviewPriceLevel {
                 price: level.price.to_string(),
-                total_volume: level.total_volume.to_string(),
+                total_volume: remaining_volume.to_string(),
                 order_count,
             });
             current_price = level.next_price;
@@ -296,11 +298,14 @@ async fn get_system_overview(
     while !current_price.is_zero() && count < 10 {
         let key = current_price | (U256::one() << 255);
         if let Some(level) = orderbook.price_levels.get(&key) {
+            // 统计该价格层级的订单数量和剩余量
             let mut order_count = 0;
+            let mut remaining_volume = U256::zero();
             let mut order_id = level.head_order_id;
             while !order_id.is_zero() {
                 order_count += 1;
                 if let Some(order) = orderbook.orders.get(&order_id) {
+                    remaining_volume += order.amount - order.filled_amount;
                     order_id = order.next_order_id;
                 } else {
                     break;
@@ -308,7 +313,7 @@ async fn get_system_overview(
             }
             bids.push(OverviewPriceLevel {
                 price: level.price.to_string(),
-                total_volume: level.total_volume.to_string(),
+                total_volume: remaining_volume.to_string(),
                 order_count,
             });
             current_price = level.next_price;
