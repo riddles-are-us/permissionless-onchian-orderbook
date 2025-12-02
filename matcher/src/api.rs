@@ -164,18 +164,39 @@ async fn get_order(
     }
 }
 
-/// 获取用户的交易历史
-async fn get_user_trades(
+/// 获取所有交易历史
+async fn get_trades(
     state: web::Data<Arc<ApiState>>,
-    path: web::Path<String>,
     query: web::Query<TradeQuery>,
 ) -> impl Responder {
-    let trader = path.into_inner();
     let limit = query.limit.unwrap_or(50).min(100);
     let offset = query.offset.unwrap_or(0);
 
-    match state.storage.get_trades_by_trader(&trader, limit, offset).await {
+    match state.storage.get_trades(limit, offset).await {
         Ok(trades) => HttpResponse::Ok().json(ApiResponse::success(trades)),
+        Err(e) => HttpResponse::InternalServerError().json(ApiResponse::<()>::error(&e.to_string())),
+    }
+}
+
+/// 获取所有订单（支持状态筛选）
+async fn get_orders(
+    state: web::Data<Arc<ApiState>>,
+    query: web::Query<OrderQuery>,
+) -> impl Responder {
+    let limit = query.limit.unwrap_or(50).min(100);
+    let offset = query.offset.unwrap_or(0);
+
+    let status = query.status.as_ref().and_then(|s| match s.to_lowercase().as_str() {
+        "pending" => Some(OrderStatus::Pending),
+        "active" => Some(OrderStatus::Active),
+        "partiallyfilled" => Some(OrderStatus::PartiallyFilled),
+        "filled" => Some(OrderStatus::Filled),
+        "cancelled" => Some(OrderStatus::Cancelled),
+        _ => None,
+    });
+
+    match state.storage.get_orders(status, limit, offset).await {
+        Ok(orders) => HttpResponse::Ok().json(ApiResponse::success(orders)),
         Err(e) => HttpResponse::InternalServerError().json(ApiResponse::<()>::error(&e.to_string())),
     }
 }
@@ -224,7 +245,7 @@ async fn get_system_overview(
                 crate::types::RequestType::PlaceOrder => "PlaceOrder".to_string(),
                 crate::types::RequestType::RemoveOrder => "RemoveOrder".to_string(),
             },
-            trader: format!("{:?}", r.trader),
+            trader: format!("{:?}", r.trader).to_lowercase(),
             order_type: match r.order_type {
                 crate::types::OrderType::Limit => "Limit".to_string(),
                 crate::types::OrderType::Market => "Market".to_string(),
@@ -361,12 +382,13 @@ pub async fn start_api_server(config: ApiConfig, storage: MongoStorage, global_s
             .app_data(web::Data::new(state.clone()))
             // 健康检查
             .route("/health", web::get().to(health))
+            // 全局订单和交易
+            .route("/api/v1/orders", web::get().to(get_orders))
+            .route("/api/v1/orders/{order_id}", web::get().to(get_order))
+            .route("/api/v1/trades", web::get().to(get_trades))
             // 用户订单相关
             .route("/api/v1/users/{trader}/orders", web::get().to(get_user_orders))
             .route("/api/v1/users/{trader}/orders/active", web::get().to(get_user_active_orders))
-            .route("/api/v1/users/{trader}/trades", web::get().to(get_user_trades))
-            // 订单详情
-            .route("/api/v1/orders/{order_id}", web::get().to(get_order))
             // 订单簿
             .route("/api/v1/orderbook/{trading_pair}", web::get().to(get_orderbook))
             // 系统概述
