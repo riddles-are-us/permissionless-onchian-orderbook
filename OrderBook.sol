@@ -1105,12 +1105,14 @@ contract OrderBook {
         }
 
         // 更新订单已成交数量
+        uint256 bidFilledIncrement;
         if (isBidMarketOrder) {
             // 市价买单：filledAmount追踪已花费的quote tokens
-            uint256 quoteSpent = (tradeAmount * tradePrice) / TradingConstants.PRICE_DECIMALS;
-            bidOrder.filledAmount += quoteSpent;
+            bidFilledIncrement = (tradeAmount * tradePrice) / TradingConstants.PRICE_DECIMALS;
+            bidOrder.filledAmount += bidFilledIncrement;
         } else {
-            bidOrder.filledAmount += tradeAmount;
+            bidFilledIncrement = tradeAmount;
+            bidOrder.filledAmount += bidFilledIncrement;
         }
         askOrder.filledAmount += tradeAmount;
 
@@ -1152,7 +1154,7 @@ contract OrderBook {
         if (bidFullyFilled) {
             _removeFilledOrder(tradingPair, bidOrderId, false);
         }
-        emit OrderFilled(tradingPair, bidOrderId, tradeAmount, bidFullyFilled);
+        emit OrderFilled(tradingPair, bidOrderId, bidFilledIncrement, bidFullyFilled);
 
         // 检查卖单是否完全成交
         bool askFullyFilled = (askOrder.filledAmount == askOrder.amount);
