@@ -151,6 +151,11 @@ impl StateSynchronizer {
         // 同步 matchId
         self.sync_match_id().await?;
 
+        // 同步历史事件到 MongoDB（包括已完成的订单和交易）
+        if self.storage.is_some() {
+            self.sync_historical_events(current_block).await?;
+        }
+
         // 记录同步的区块高度，后续 event 监听从这个区块开始
         self.synced_block = current_block;
         self.state.update_current_block(current_block);
@@ -254,6 +259,143 @@ impl StateSynchronizer {
         let match_id = self.orderbook.match_id().call().await?;
         self.state.update_match_id(match_id);
         info!("  matchId: {}", match_id);
+        Ok(())
+    }
+
+    /// 同步历史事件到 MongoDB（包括已完成的订单和交易记录）
+    async fn sync_historical_events(&self, to_block: u64) -> Result<()> {
+        let storage = match &self.storage {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+
+        let from_block = self.config.sync.start_block;
+        info!("📜 Syncing historical events from block {} to {}", from_block, to_block);
+
+        // 同步 Sequencer 的 PlaceOrderRequested 事件（创建订单记录）
+        let place_order_events = self.sequencer
+            .place_order_requested_filter()
+            .from_block(from_block)
+            .to_block(to_block)
+            .query()
+            .await?;
+
+        info!("  Found {} PlaceOrderRequested events", place_order_events.len());
+
+        for event in place_order_events {
+            let order_type = match event.order_type {
+                0 => StoredOrderType::Limit,
+                1 => StoredOrderType::Market,
+                _ => StoredOrderType::Limit,
+            };
+
+            let stored_order = StoredOrder {
+                order_id: event.request_id.to_string(),
+                trading_pair: format!("0x{}", hex::encode(event.trading_pair)),
+                trader: format!("{:?}", event.trader).to_lowercase(),
+                order_type,
+                is_ask: event.is_ask,
+                price: event.price.to_string(),
+                amount: event.amount.to_string(),
+                filled_amount: "0".to_string(),
+                status: OrderStatus::Pending,
+                created_at: BsonDateTime::now(),
+                updated_at: BsonDateTime::now(),
+                block_number: from_block,
+                tx_hash: None,
+            };
+
+            if let Err(e) = storage.upsert_order(&stored_order).await {
+                warn!("Failed to save historical order to MongoDB: {}", e);
+            }
+        }
+
+        // 同步 OrderBook 的 Trade 事件
+        let trade_events = self.orderbook
+            .trade_filter()
+            .from_block(from_block)
+            .to_block(to_block)
+            .query()
+            .await?;
+
+        info!("  Found {} Trade events", trade_events.len());
+
+        for trade in trade_events {
+            let trading_pair_hex = format!("0x{}", hex::encode(trade.trading_pair));
+            let stored_trade = StoredTrade {
+                trade_id: format!(
+                    "{}-{}-{}",
+                    trading_pair_hex,
+                    trade.buy_order_id,
+                    trade.sell_order_id
+                ),
+                trading_pair: trading_pair_hex,
+                buy_order_id: trade.buy_order_id.to_string(),
+                sell_order_id: trade.sell_order_id.to_string(),
+                buyer: format!("{:?}", trade.buyer).to_lowercase(),
+                seller: format!("{:?}", trade.seller).to_lowercase(),
+                price: trade.price.to_string(),
+                amount: trade.amount.to_string(),
+                traded_at: BsonDateTime::now(),
+                block_number: from_block,
+                tx_hash: None,
+            };
+
+            if let Err(e) = storage.insert_trade(&stored_trade).await {
+                // Ignore duplicate key errors (trade already exists)
+                if !e.to_string().contains("duplicate key") {
+                    warn!("Failed to save historical trade to MongoDB: {}", e);
+                }
+            }
+        }
+
+        // 同步 OrderBook 的 OrderFilled 事件（更新订单状态）
+        let order_filled_events = self.orderbook
+            .order_filled_filter()
+            .from_block(from_block)
+            .to_block(to_block)
+            .query()
+            .await?;
+
+        info!("  Found {} OrderFilled events", order_filled_events.len());
+
+        for filled in order_filled_events {
+            let status = if filled.is_fully_filled {
+                OrderStatus::Filled
+            } else {
+                OrderStatus::PartiallyFilled
+            };
+
+            if let Err(e) = storage.update_order_status(
+                &filled.order_id.to_string(),
+                status,
+                Some(&filled.filled_amount.to_string()),
+            ).await {
+                warn!("Failed to update historical order status: {}", e);
+            }
+        }
+
+        // 同步 OrderBook 的 OrderRemoved 事件（取消订单）
+        let order_removed_events = self.orderbook
+            .order_removed_filter()
+            .from_block(from_block)
+            .to_block(to_block)
+            .query()
+            .await?;
+
+        info!("  Found {} OrderRemoved events", order_removed_events.len());
+
+        for removed in order_removed_events {
+            if let Err(e) = storage.update_order_status(
+                &removed.order_id.to_string(),
+                OrderStatus::Cancelled,
+                None,
+            ).await {
+                warn!("Failed to update historical order status to cancelled: {}", e);
+            }
+        }
+
+        info!("✅ Historical events synced to MongoDB");
         Ok(())
     }
 
