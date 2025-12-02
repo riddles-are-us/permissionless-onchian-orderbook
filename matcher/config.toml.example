@@ -15,14 +15,14 @@ rpc_url = "wss://eth-sepolia.g.alchemy.com/v2/P2hms_foHU-rHhmt8hcpU"
 chain_id = 11155111
 
 [contracts]
-# Sequencer 合约地址 (Sepolia - 带 matchAll 功能)
-sequencer = "0xBAA2D96a3CE32EECdecCDF02136654cF01c06776"
+# Sequencer 合约地址 (Sepolia - 2025-12-02 部署，支持新 OrderFilled 事件)
+sequencer = "0xf131c96a5473F880597ea61e5203D44B087A22a4"
 
-# OrderBook 合约地址 (Sepolia - 带 matchAll 功能)
-orderbook = "0x8e627Fc5D660D327C7e24465EB44430cf3e9Cf58"
+# OrderBook 合约地址 (Sepolia - 2025-12-02 部署，支持新 OrderFilled 事件)
+orderbook = "0x63EDb654d3Aa1681625fA325Da83cD02449f9298"
 
-# Account 合约地址 (Sepolia - 带 matchAll 功能)
-account = "0x0fc28F3D6b8395a618C8fe8290cC5A680f0662dB"
+# Account 合约地址 (Sepolia - 2025-12-02 部署)
+account = "0xBFe1Fc928d92Dd4F884386bF1689Ec5C17455a57"
 
 # Trading Pair ID (WETH/USDC)
 trading_pair = "0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816"
@@ -31,7 +31,8 @@ trading_pair = "0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc8
 # 初始同步的起始区块
 # 0 = 从最新区块开始
 # 其他值 = 从指定区块开始同步
-start_block = 0
+# Sepolia 2025-12-02 部署区块
+start_block = 9753169
 
 # 是否同步历史区块数据
 # true = 同步从 start_block 到当前的所有数据
