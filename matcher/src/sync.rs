@@ -12,7 +12,6 @@ use ethers::abi::RawLog;
 use mongodb::bson::DateTime as BsonDateTime;
 use futures::stream::StreamExt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, info, warn};
 
 pub struct StateSynchronizer {
@@ -276,6 +275,7 @@ impl StateSynchronizer {
     }
 
     /// 同步历史事件到 MongoDB（包括已完成的订单和交易记录）
+    /// 事件按照 emit 时间（block_number, log_index）排序后处理，确保状态更新顺序正确
     async fn sync_historical_events(&self, to_block: u64) -> Result<()> {
         let storage = match &self.storage {
             Some(s) => s,
@@ -285,144 +285,203 @@ impl StateSynchronizer {
         let from_block = self.config.sync.start_block;
         info!("📜 Syncing historical events from block {} to {}", from_block, to_block);
 
-        // 同步 Sequencer 的 PlaceOrderRequested 事件（创建订单记录）
+        // 定义统一的事件枚举，用于排序
+        #[derive(Debug)]
+        enum HistoricalEvent {
+            PlaceOrder(crate::contracts::sequencer::PlaceOrderRequestedFilter, u64, u64), // event, block, log_index
+            Trade(crate::contracts::order_book::TradeFilter, u64, u64),
+            OrderFilled(crate::contracts::order_book::OrderFilledFilter, u64, u64),
+            OrderRemoved(crate::contracts::order_book::OrderRemovedFilter, u64, u64),
+        }
+
+        let mut all_events: Vec<HistoricalEvent> = Vec::new();
+
+        // 获取 PlaceOrderRequested 事件（带元数据）
         let place_order_events = self.sequencer
             .place_order_requested_filter()
             .from_block(from_block)
             .to_block(to_block)
-            .query()
+            .query_with_meta()
             .await?;
 
         info!("  Found {} PlaceOrderRequested events", place_order_events.len());
 
-        for event in place_order_events {
-            let order_type = match event.order_type {
-                0 => StoredOrderType::Limit,
-                1 => StoredOrderType::Market,
-                _ => StoredOrderType::Limit,
-            };
-
-            let stored_order = StoredOrder {
-                order_id: event.request_id.to_string(),
-                trading_pair: format!("0x{}", hex::encode(event.trading_pair)),
-                trader: format!("{:?}", event.trader).to_lowercase(),
-                order_type,
-                is_ask: event.is_ask,
-                price: event.price.to_string(),
-                amount: event.amount.to_string(),
-                filled_amount: "0".to_string(),
-                status: OrderStatus::Pending,
-                created_at: BsonDateTime::now(),
-                updated_at: BsonDateTime::now(),
-                block_number: from_block,
-                tx_hash: None,
-            };
-
-            if let Err(e) = storage.upsert_order(&stored_order).await {
-                warn!("Failed to save historical order to MongoDB: {}", e);
-            }
+        for (event, meta) in place_order_events {
+            let block_number = meta.block_number.as_u64();
+            let log_index = meta.log_index.as_u64();
+            all_events.push(HistoricalEvent::PlaceOrder(event, block_number, log_index));
         }
 
-        // 同步 OrderBook 的 Trade 事件
+        // 获取 Trade 事件（带元数据）
         let trade_events = self.orderbook
             .trade_filter()
             .from_block(from_block)
             .to_block(to_block)
-            .query()
+            .query_with_meta()
             .await?;
 
         info!("  Found {} Trade events", trade_events.len());
 
-        for trade in trade_events {
-            let trading_pair_hex = format!("0x{}", hex::encode(trade.trading_pair));
-            let stored_trade = StoredTrade {
-                trade_id: format!(
-                    "{}-{}-{}",
-                    trading_pair_hex,
-                    trade.buy_order_id,
-                    trade.sell_order_id
-                ),
-                trading_pair: trading_pair_hex,
-                buy_order_id: trade.buy_order_id.to_string(),
-                sell_order_id: trade.sell_order_id.to_string(),
-                buyer: format!("{:?}", trade.buyer).to_lowercase(),
-                seller: format!("{:?}", trade.seller).to_lowercase(),
-                price: trade.price.to_string(),
-                amount: trade.amount.to_string(),
-                traded_at: BsonDateTime::now(),
-                block_number: from_block,
-                tx_hash: None,
-            };
-
-            if let Err(e) = storage.insert_trade(&stored_trade).await {
-                // Ignore duplicate key errors (trade already exists)
-                if !e.to_string().contains("duplicate key") {
-                    warn!("Failed to save historical trade to MongoDB: {}", e);
-                }
-            }
+        for (event, meta) in trade_events {
+            let block_number = meta.block_number.as_u64();
+            let log_index = meta.log_index.as_u64();
+            all_events.push(HistoricalEvent::Trade(event, block_number, log_index));
         }
 
-        // 同步 OrderBook 的 OrderFilled 事件（更新订单状态）
+        // 获取 OrderFilled 事件（带元数据）
         let order_filled_events = self.orderbook
             .order_filled_filter()
             .from_block(from_block)
             .to_block(to_block)
-            .query()
+            .query_with_meta()
             .await?;
 
         info!("  Found {} OrderFilled events", order_filled_events.len());
 
-        for filled in order_filled_events {
-            let status = if filled.is_fully_filled {
-                OrderStatus::Filled
-            } else {
-                OrderStatus::PartiallyFilled
-            };
-
-            // 查询订单来判断是否是市价买单
-            // 市价买单：filled_amount 对应 quote_amount
-            // 其他订单：filled_amount 对应 base_amount
-            let filled_amount = match storage.get_order_by_id(&filled.order_id.to_string()).await {
-                Ok(Some(order)) => {
-                    let is_market_bid = matches!(order.order_type, StoredOrderType::Market) && !order.is_ask;
-                    if is_market_bid {
-                        filled.quote_amount.to_string()
-                    } else {
-                        filled.base_amount.to_string()
-                    }
-                }
-                _ => {
-                    // 如果查不到订单信息，默认使用 base_amount
-                    filled.base_amount.to_string()
-                }
-            };
-
-            if let Err(e) = storage.update_order_status(
-                &filled.order_id.to_string(),
-                status,
-                Some(&filled_amount),
-            ).await {
-                warn!("Failed to update historical order status: {}", e);
-            }
+        for (event, meta) in order_filled_events {
+            let block_number = meta.block_number.as_u64();
+            let log_index = meta.log_index.as_u64();
+            all_events.push(HistoricalEvent::OrderFilled(event, block_number, log_index));
         }
 
-        // 同步 OrderBook 的 OrderRemoved 事件（取消订单）
+        // 获取 OrderRemoved 事件（带元数据）
         let order_removed_events = self.orderbook
             .order_removed_filter()
             .from_block(from_block)
             .to_block(to_block)
-            .query()
+            .query_with_meta()
             .await?;
 
         info!("  Found {} OrderRemoved events", order_removed_events.len());
 
-        for removed in order_removed_events {
-            if let Err(e) = storage.update_order_status(
-                &removed.order_id.to_string(),
-                OrderStatus::Cancelled,
-                None,
-            ).await {
-                warn!("Failed to update historical order status to cancelled: {}", e);
+        for (event, meta) in order_removed_events {
+            let block_number = meta.block_number.as_u64();
+            let log_index = meta.log_index.as_u64();
+            all_events.push(HistoricalEvent::OrderRemoved(event, block_number, log_index));
+        }
+
+        // 按照 (block_number, log_index) 排序，确保按 emit 时间顺序处理
+        all_events.sort_by(|a, b| {
+            let (block_a, log_a) = match a {
+                HistoricalEvent::PlaceOrder(_, block, log) => (*block, *log),
+                HistoricalEvent::Trade(_, block, log) => (*block, *log),
+                HistoricalEvent::OrderFilled(_, block, log) => (*block, *log),
+                HistoricalEvent::OrderRemoved(_, block, log) => (*block, *log),
+            };
+            let (block_b, log_b) = match b {
+                HistoricalEvent::PlaceOrder(_, block, log) => (*block, *log),
+                HistoricalEvent::Trade(_, block, log) => (*block, *log),
+                HistoricalEvent::OrderFilled(_, block, log) => (*block, *log),
+                HistoricalEvent::OrderRemoved(_, block, log) => (*block, *log),
+            };
+            (block_a, log_a).cmp(&(block_b, log_b))
+        });
+
+        info!("  Processing {} events in chronological order", all_events.len());
+
+        // 按时间顺序处理所有事件
+        for event in all_events {
+            match event {
+                HistoricalEvent::PlaceOrder(place_order, block_number, _) => {
+                    let order_type = match place_order.order_type {
+                        0 => StoredOrderType::Limit,
+                        1 => StoredOrderType::Market,
+                        _ => StoredOrderType::Limit,
+                    };
+
+                    let stored_order = StoredOrder {
+                        order_id: place_order.request_id.to_string(),
+                        trading_pair: format!("0x{}", hex::encode(place_order.trading_pair)),
+                        trader: format!("{:?}", place_order.trader).to_lowercase(),
+                        order_type,
+                        is_ask: place_order.is_ask,
+                        price: place_order.price.to_string(),
+                        amount: place_order.amount.to_string(),
+                        filled_amount: "0".to_string(),
+                        status: OrderStatus::Pending,
+                        created_at: BsonDateTime::now(),
+                        updated_at: BsonDateTime::now(),
+                        block_number,
+                        tx_hash: None,
+                    };
+
+                    if let Err(e) = storage.upsert_order(&stored_order).await {
+                        warn!("Failed to save historical order to MongoDB: {}", e);
+                    }
+                }
+
+                HistoricalEvent::Trade(trade, block_number, _) => {
+                    let trading_pair_hex = format!("0x{}", hex::encode(trade.trading_pair));
+                    let stored_trade = StoredTrade {
+                        trade_id: format!(
+                            "{}-{}-{}",
+                            trading_pair_hex,
+                            trade.buy_order_id,
+                            trade.sell_order_id
+                        ),
+                        trading_pair: trading_pair_hex,
+                        buy_order_id: trade.buy_order_id.to_string(),
+                        sell_order_id: trade.sell_order_id.to_string(),
+                        buyer: format!("{:?}", trade.buyer).to_lowercase(),
+                        seller: format!("{:?}", trade.seller).to_lowercase(),
+                        price: trade.price.to_string(),
+                        amount: trade.amount.to_string(),
+                        traded_at: BsonDateTime::now(),
+                        block_number,
+                        tx_hash: None,
+                    };
+
+                    if let Err(e) = storage.insert_trade(&stored_trade).await {
+                        // Ignore duplicate key errors (trade already exists)
+                        if !e.to_string().contains("duplicate key") {
+                            warn!("Failed to save historical trade to MongoDB: {}", e);
+                        }
+                    }
+                }
+
+                HistoricalEvent::OrderFilled(filled, _, _) => {
+                    let status = if filled.is_fully_filled {
+                        OrderStatus::Filled
+                    } else {
+                        OrderStatus::PartiallyFilled
+                    };
+
+                    // 查询订单来判断是否是市价买单
+                    // 市价买单：filled_amount 对应 quote_amount
+                    // 其他订单：filled_amount 对应 base_amount
+                    let filled_amount = match storage.get_order_by_id(&filled.order_id.to_string()).await {
+                        Ok(Some(order)) => {
+                            let is_market_bid = matches!(order.order_type, StoredOrderType::Market) && !order.is_ask;
+                            if is_market_bid {
+                                filled.quote_amount.to_string()
+                            } else {
+                                filled.base_amount.to_string()
+                            }
+                        }
+                        _ => {
+                            // 如果查不到订单信息，默认使用 base_amount
+                            filled.base_amount.to_string()
+                        }
+                    };
+
+                    if let Err(e) = storage.update_order_status(
+                        &filled.order_id.to_string(),
+                        status,
+                        Some(&filled_amount),
+                    ).await {
+                        warn!("Failed to update historical order status: {}", e);
+                    }
+                }
+
+                HistoricalEvent::OrderRemoved(removed, _, _) => {
+                    if let Err(e) = storage.update_order_status(
+                        &removed.order_id.to_string(),
+                        OrderStatus::Cancelled,
+                        None,
+                    ).await {
+                        warn!("Failed to update historical order status to cancelled: {}", e);
+                    }
+                }
             }
         }
 
@@ -579,100 +638,40 @@ impl StateSynchronizer {
     }
 
     /// 监听事件（带重试逻辑）
+    /// 使用单一进程按照 block_number + log_index 顺序处理所有事件
     async fn watch_events(&self) -> Result<()> {
-        // 使用 AtomicU64 跟踪已处理的区块，以便在重连时从正确的位置继续
-        let last_processed_block = Arc::new(AtomicU64::new(self.synced_block));
+        let mut retry_count = 0u32;
+        const MAX_RETRY_DELAY: u64 = 30;
+        let mut last_processed_block = self.synced_block;
 
         loop {
-            let current_from_block = last_processed_block.load(Ordering::SeqCst);
-            info!("👀 Watching for OrderBook and Sequencer events from block {}", current_from_block);
+            // 使用 last_processed_block + 1 避免重复处理已同步的状态
+            let event_start_block = last_processed_block + 1;
 
-            // 创建 OrderBook 事件监听任务
-            let orderbook_watcher = {
-                let orderbook = self.orderbook.clone();
-                let state = self.state.clone();
-                let storage = self.storage.clone();
-                let last_block = last_processed_block.clone();
+            info!("👀 Watching for OrderBook and Sequencer events from block {} (retry: {})", event_start_block, retry_count);
 
-                tokio::spawn(async move {
-                    Self::watch_orderbook_events(orderbook, state, storage, current_from_block, last_block).await
-                })
-            };
+            // 创建合并的事件 filter，同时监听 OrderBook 和 Sequencer 的事件
+            let orderbook_addr: Address = self.orderbook.address();
+            let sequencer_addr: Address = self.sequencer.address();
 
-            // 创建 Sequencer 事件监听任务
-            let sequencer_watcher = {
-                let sequencer = self.sequencer.clone();
-                let state = self.state.clone();
-                let storage = self.storage.clone();
-                let last_block = last_processed_block.clone();
+            let filter = ethers::types::Filter::new()
+                .address(vec![orderbook_addr, sequencer_addr])
+                .from_block(event_start_block);
 
-                tokio::spawn(async move {
-                    Self::watch_sequencer_events(sequencer, state, storage, current_from_block, last_block).await
-                })
-            };
-
-            // 等待任一任务完成
-            tokio::select! {
-                result = orderbook_watcher => {
-                    match result {
-                        Ok(Ok(_)) => info!("OrderBook watcher completed normally"),
-                        Ok(Err(e)) => warn!("OrderBook watcher error: {}", e),
-                        Err(e) => warn!("OrderBook watcher task error: {}", e),
-                    }
-                }
-                result = sequencer_watcher => {
-                    match result {
-                        Ok(Ok(_)) => info!("Sequencer watcher completed normally"),
-                        Ok(Err(e)) => warn!("Sequencer watcher error: {}", e),
-                        Err(e) => warn!("Sequencer watcher task error: {}", e),
-                    }
-                }
-            }
-
-            // 任一 watcher 退出后，等待一段时间再重试
-            warn!("⚠️ Event watcher stopped, restarting in 5 seconds...");
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-            // 重新连接 WebSocket（可能连接已断开）
-            info!("🔄 Reconnecting event watchers...");
-        }
-    }
-
-    /// 监听 OrderBook 事件并更新 GlobalState
-    /// 使用 WebSocket 订阅，断开后自动重连
-    async fn watch_orderbook_events(
-        orderbook: OrderBook<Provider<Ws>>,
-        state: GlobalState,
-        storage: Option<MongoStorage>,
-        from_block: u64,
-        last_processed_block: Arc<AtomicU64>,
-    ) -> Result<()> {
-        let mut retry_count = 0;
-        const MAX_RETRY_DELAY: u64 = 30; // 最大重试延迟 30 秒
-
-        loop {
-            let current_from_block = last_processed_block.load(Ordering::SeqCst);
-            // 使用 current_from_block + 1 避免重复处理已同步的状态
-            let event_start_block = current_from_block + 1;
-
-            info!("📡 Starting OrderBook event listener from block {} (retry: {})", event_start_block, retry_count);
-
-            // 使用真正的 WebSocket 订阅 (subscribe_logs)
-            let filter = orderbook.events().from_block(event_start_block).filter;
-            let client = orderbook.client();
+            let client = self.provider.clone();
 
             let mut subscription = match client.subscribe_logs(&filter).await {
                 Ok(sub) => {
-                    retry_count = 0; // 成功连接，重置重试计数
-                    info!("📡 OrderBook WebSocket subscription created successfully from block {}", event_start_block);
+                    retry_count = 0;
+                    info!("📡 Unified WebSocket subscription created successfully from block {}", event_start_block);
                     sub
                 }
                 Err(e) => {
                     retry_count += 1;
                     let delay = std::cmp::min(2u64.pow(retry_count.min(5)), MAX_RETRY_DELAY);
-                    warn!("Failed to subscribe to OrderBook logs: {}, retrying in {} seconds...", e, delay);
+                    warn!("Failed to subscribe to logs: {}, retrying in {} seconds...", e, delay);
                     tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
-                    continue; // 重试订阅
+                    continue;
                 }
             };
 
@@ -680,29 +679,39 @@ impl StateSynchronizer {
             while let Some(log) = subscription.next().await {
                 // 更新已处理的区块号
                 if let Some(block_num) = log.block_number {
-                    let current = last_processed_block.load(Ordering::SeqCst);
-                    if block_num.as_u64() > current {
-                        last_processed_block.store(block_num.as_u64(), Ordering::SeqCst);
+                    if block_num.as_u64() > last_processed_block {
+                        last_processed_block = block_num.as_u64();
                     }
                 }
 
-                // 尝试解析事件
                 let raw_log = RawLog {
                     topics: log.topics.clone(),
                     data: log.data.to_vec(),
                 };
-                if let Ok(event) = OrderBookEvents::decode_log(&raw_log) {
-                    Self::handle_orderbook_event(event, &state, &storage).await;
-                } else {
-                    debug!("Failed to parse OrderBook log: {:?}", log);
+
+                // 根据日志来源地址解析事件
+                if log.address == orderbook_addr {
+                    if let Ok(event) = OrderBookEvents::decode_log(&raw_log) {
+                        Self::handle_orderbook_event(event, &self.state, &self.storage).await;
+                    } else {
+                        debug!("Failed to parse OrderBook log: {:?}", log);
+                    }
+                } else if log.address == sequencer_addr {
+                    if let Ok(event) = SequencerEvents::decode_log(&raw_log) {
+                        let block_num = log.block_number.map(|b| b.as_u64()).unwrap_or(0);
+                        Self::handle_sequencer_event(event, &self.state, &self.storage, block_num).await;
+                    } else {
+                        debug!("Failed to parse Sequencer log: {:?}", log);
+                    }
                 }
             }
 
             // 订阅结束，准备重连
-            warn!("⚠️ OrderBook WebSocket subscription ended, reconnecting...");
+            warn!("⚠️ WebSocket subscription ended, reconnecting...");
             retry_count += 1;
             let delay = std::cmp::min(2u64.pow(retry_count.min(5)), MAX_RETRY_DELAY);
             tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+            info!("🔄 Reconnecting event watcher...");
         }
     }
 
@@ -1075,82 +1084,12 @@ impl StateSynchronizer {
         }
     }
 
-    /// 监听 Sequencer 事件并更新 GlobalState
-    /// 注意：启动时已通过 RPC 读取了所有 pending requests
-    /// 这里只监听新产生的事件，不再使用 RPC 读取 request
-    /// 使用 WebSocket 订阅，断开后自动重连
-    async fn watch_sequencer_events(
-        sequencer: Sequencer<Provider<Ws>>,
-        state: GlobalState,
-        storage: Option<MongoStorage>,
-        from_block: u64,
-        last_processed_block: Arc<AtomicU64>,
-    ) -> Result<()> {
-        let mut retry_count = 0;
-        const MAX_RETRY_DELAY: u64 = 30; // 最大重试延迟 30 秒
-
-        loop {
-            let current_from_block = last_processed_block.load(Ordering::SeqCst);
-            // 使用 current_from_block + 1 因为 from_block 的状态已经通过 RPC 同步了
-            let event_start_block = current_from_block + 1;
-
-            info!("📡 Starting Sequencer event listener from block {} (retry: {})", event_start_block, retry_count);
-
-            // 使用真正的 WebSocket 订阅 (subscribe_logs)
-            let filter = sequencer.events().from_block(event_start_block).filter;
-            let client = sequencer.client();
-
-            let mut subscription = match client.subscribe_logs(&filter).await {
-                Ok(sub) => {
-                    retry_count = 0; // 成功连接，重置重试计数
-                    info!("📡 Sequencer WebSocket subscription created successfully from block {}", event_start_block);
-                    sub
-                }
-                Err(e) => {
-                    retry_count += 1;
-                    let delay = std::cmp::min(2u64.pow(retry_count.min(5)), MAX_RETRY_DELAY);
-                    warn!("Failed to subscribe to Sequencer logs: {}, retrying in {} seconds...", e, delay);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
-                    continue; // 重试订阅
-                }
-            };
-
-            // 处理订阅的日志
-            while let Some(log) = subscription.next().await {
-                // 更新已处理的区块号
-                if let Some(block_num) = log.block_number {
-                    let current = last_processed_block.load(Ordering::SeqCst);
-                    if block_num.as_u64() > current {
-                        last_processed_block.store(block_num.as_u64(), Ordering::SeqCst);
-                    }
-                }
-
-                // 尝试解析事件
-                let raw_log = RawLog {
-                    topics: log.topics.clone(),
-                    data: log.data.to_vec(),
-                };
-                if let Ok(event) = SequencerEvents::decode_log(&raw_log) {
-                    Self::handle_sequencer_event(event, &state, &storage, from_block).await;
-                } else {
-                    debug!("Failed to parse Sequencer log: {:?}", log);
-                }
-            }
-
-            // 订阅结束，准备重连
-            warn!("⚠️ Sequencer WebSocket subscription ended, reconnecting...");
-            retry_count += 1;
-            let delay = std::cmp::min(2u64.pow(retry_count.min(5)), MAX_RETRY_DELAY);
-            tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
-        }
-    }
-
     /// 处理单个 Sequencer 事件
     async fn handle_sequencer_event(
         event: crate::contracts::sequencer::SequencerEvents,
         state: &GlobalState,
         storage: &Option<MongoStorage>,
-        from_block: u64,
+        block_number: u64,
     ) {
         use crate::contracts::sequencer::SequencerEvents;
 
@@ -1202,7 +1141,7 @@ impl StateSynchronizer {
                         status: OrderStatus::Pending,
                         created_at: BsonDateTime::now(),
                         updated_at: BsonDateTime::now(),
-                        block_number: from_block,
+                        block_number,
                         tx_hash: None,
                     };
 
