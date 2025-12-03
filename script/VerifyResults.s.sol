@@ -130,7 +130,7 @@ contract VerifyResultsScript is Script {
         for (uint256 i = 0; i < bidPrices.length; i++) {
             if (bidPrices[i] == 0) break;
             bidLevels++;
-            console.log("    %d USDC x %d WETH", bidPrices[i] / PRICE_DECIMALS, bidVolumes[i] / PRICE_DECIMALS);
+            console.log("    Price: %d USDC, Volume: %d (raw)", bidPrices[i] / PRICE_DECIMALS, bidVolumes[i]);
         }
 
         // 预期: 3 个 Bid 层级 (2000, 1950, 1900)
@@ -147,7 +147,7 @@ contract VerifyResultsScript is Script {
         for (uint256 i = 0; i < askPrices.length; i++) {
             if (askPrices[i] == 0) break;
             askLevels++;
-            console.log("    %d USDC x %d WETH", askPrices[i] / PRICE_DECIMALS, askVolumes[i] / PRICE_DECIMALS);
+            console.log("    Price: %d USDC, Volume: %d (raw)", askPrices[i] / PRICE_DECIMALS, askVolumes[i]);
         }
 
         // 预期: 2 个 Ask 层级 (2100, 2150)
@@ -217,14 +217,14 @@ contract VerifyResultsScript is Script {
         console.log("  Bid:");
         for (uint256 i = 0; i < bidPrices.length; i++) {
             if (bidPrices[i] == 0) break;
-            console.log("    %d USDC x %d WETH", bidPrices[i] / PRICE_DECIMALS, bidVolumes[i] / PRICE_DECIMALS);
+            console.log("    Price: %d USDC, Volume: %d (raw)", bidPrices[i] / PRICE_DECIMALS, bidVolumes[i]);
         }
 
         (uint256[] memory askPrices, uint256[] memory askVolumes) = orderbook.getOrderBookSnapshot(pairId, true, 5);
         console.log("  Ask:");
         for (uint256 i = 0; i < askPrices.length; i++) {
             if (askPrices[i] == 0) break;
-            console.log("    %d USDC x %d WETH", askPrices[i] / PRICE_DECIMALS, askVolumes[i] / PRICE_DECIMALS);
+            console.log("    Price: %d USDC, Volume: %d (raw)", askPrices[i] / PRICE_DECIMALS, askVolumes[i]);
         }
 
         // Match ID
@@ -331,7 +331,7 @@ contract VerifyResultsScript is Script {
         (uint256[] memory bidPrices, uint256[] memory bidVolumes) = orderbook.getOrderBookSnapshot(pairId, false, 5);
         for (uint256 i = 0; i < bidPrices.length; i++) {
             if (bidPrices[i] == 0) break;
-            console.log("  %d USDC x %d WETH", bidPrices[i] / PRICE_DECIMALS, bidVolumes[i] / PRICE_DECIMALS);
+            console.log("  Price: %d USDC, Volume: %d (raw)", bidPrices[i] / PRICE_DECIMALS, bidVolumes[i]);
         }
 
         console.log("");
@@ -339,7 +339,7 @@ contract VerifyResultsScript is Script {
         (uint256[] memory askPrices, uint256[] memory askVolumes) = orderbook.getOrderBookSnapshot(pairId, true, 5);
         for (uint256 i = 0; i < askPrices.length; i++) {
             if (askPrices[i] == 0) break;
-            console.log("  %d USDC x %d WETH", askPrices[i] / PRICE_DECIMALS, askVolumes[i] / PRICE_DECIMALS);
+            console.log("  Price: %d USDC, Volume: %d (raw)", askPrices[i] / PRICE_DECIMALS, askVolumes[i]);
         }
 
         console.log("");
@@ -383,9 +383,8 @@ contract VerifyResultsScript is Script {
             OrderBook.PriceLevel memory level = orderbook.getPriceLevel(currentPrice, isAsk);
 
             uint256 priceWhole = level.price / PRICE_DECIMALS;
-            uint256 volumeWhole = level.totalVolume / PRICE_DECIMALS;
 
-            console.log("  Level %d: %d USDC x %d WETH", i + 1, priceWhole, volumeWhole);
+            console.log("  Level %d: %d USDC, Volume: %d (raw)", i + 1, priceWhole, level.totalVolume);
 
             currentPrice = level.nextPrice;
         }
