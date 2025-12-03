@@ -1079,8 +1079,16 @@ contract OrderBook {
             return false;
         }
 
-        // 成交价格：取卖单价格（价格优先原则）
-        uint256 tradePrice = askPrice;
+        // 成交价格：按时间优先原则，maker（先挂单）的价格成交
+        // orderId 较小的是 maker（先挂单），较大的是 taker（后挂单）
+        uint256 tradePrice;
+        if (bidOrderId < askOrderId) {
+            // 买单先挂，按买单价格成交
+            tradePrice = bidPrice;
+        } else {
+            // 卖单先挂，按卖单价格成交
+            tradePrice = askPrice;
+        }
 
         // 计算可成交数量
         uint256 bidRemaining;
