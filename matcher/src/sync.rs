@@ -1,14 +1,18 @@
 use crate::config::Config;
 use crate::contracts::{OrderBook, Sequencer};
+use crate::contracts::order_book::OrderBookEvents;
+use crate::contracts::sequencer::SequencerEvents;
 use crate::orderbook_simulator::{SimOrder, SimPriceLevel};
 use crate::state::GlobalState;
 use crate::storage::{MongoStorage, OrderStatus, StoredOrder, StoredOrderType, StoredTrade};
 use crate::types::*;
 use anyhow::{Context, Result};
 use ethers::prelude::*;
+use ethers::abi::RawLog;
 use mongodb::bson::DateTime as BsonDateTime;
 use futures::stream::StreamExt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, info, warn};
 
 pub struct StateSynchronizer {
@@ -576,20 +580,22 @@ impl StateSynchronizer {
 
     /// 监听事件（带重试逻辑）
     async fn watch_events(&self) -> Result<()> {
-        // 使用历史同步时的区块高度，确保不会漏掉事件
-        let from_block = self.synced_block;
+        // 使用 AtomicU64 跟踪已处理的区块，以便在重连时从正确的位置继续
+        let last_processed_block = Arc::new(AtomicU64::new(self.synced_block));
 
         loop {
-            info!("👀 Watching for OrderBook and Sequencer events from block {}", from_block);
+            let current_from_block = last_processed_block.load(Ordering::SeqCst);
+            info!("👀 Watching for OrderBook and Sequencer events from block {}", current_from_block);
 
             // 创建 OrderBook 事件监听任务
             let orderbook_watcher = {
                 let orderbook = self.orderbook.clone();
                 let state = self.state.clone();
                 let storage = self.storage.clone();
+                let last_block = last_processed_block.clone();
 
                 tokio::spawn(async move {
-                    Self::watch_orderbook_events(orderbook, state, storage, from_block).await
+                    Self::watch_orderbook_events(orderbook, state, storage, current_from_block, last_block).await
                 })
             };
 
@@ -598,9 +604,10 @@ impl StateSynchronizer {
                 let sequencer = self.sequencer.clone();
                 let state = self.state.clone();
                 let storage = self.storage.clone();
+                let last_block = last_processed_block.clone();
 
                 tokio::spawn(async move {
-                    Self::watch_sequencer_events(sequencer, state, storage, from_block).await
+                    Self::watch_sequencer_events(sequencer, state, storage, current_from_block, last_block).await
                 })
             };
 
@@ -632,50 +639,70 @@ impl StateSynchronizer {
     }
 
     /// 监听 OrderBook 事件并更新 GlobalState
+    /// 使用 WebSocket 订阅，断开后自动重连
     async fn watch_orderbook_events(
         orderbook: OrderBook<Provider<Ws>>,
         state: GlobalState,
         storage: Option<MongoStorage>,
         from_block: u64,
+        last_processed_block: Arc<AtomicU64>,
     ) -> Result<()> {
-        info!("📡 Starting OrderBook event listener from block {}", from_block);
+        let mut retry_count = 0;
+        const MAX_RETRY_DELAY: u64 = 30; // 最大重试延迟 30 秒
 
-        // 使用 from_block + 1 避免重复处理已同步的状态
-        let event_start_block = from_block + 1;
-
-        // 使用 events() 监听所有事件，带重试逻辑
         loop {
-            let events_filter = orderbook.events().from_block(event_start_block);
+            let current_from_block = last_processed_block.load(Ordering::SeqCst);
+            // 使用 current_from_block + 1 避免重复处理已同步的状态
+            let event_start_block = current_from_block + 1;
 
-            let mut event_stream = match events_filter.stream().await {
-                Ok(stream) => stream,
+            info!("📡 Starting OrderBook event listener from block {} (retry: {})", event_start_block, retry_count);
+
+            // 使用真正的 WebSocket 订阅 (subscribe_logs)
+            let filter = orderbook.events().from_block(event_start_block).filter;
+            let client = orderbook.client();
+
+            let mut subscription = match client.subscribe_logs(&filter).await {
+                Ok(sub) => {
+                    retry_count = 0; // 成功连接，重置重试计数
+                    info!("📡 OrderBook WebSocket subscription created successfully from block {}", event_start_block);
+                    sub
+                }
                 Err(e) => {
-                    debug!(
-                        "OrderBook event stream creation failed (block {} may not exist yet): {}, retrying in 2s...",
-                        event_start_block, e
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                    continue;
+                    retry_count += 1;
+                    let delay = std::cmp::min(2u64.pow(retry_count.min(5)), MAX_RETRY_DELAY);
+                    warn!("Failed to subscribe to OrderBook logs: {}, retrying in {} seconds...", e, delay);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                    continue; // 重试订阅
                 }
             };
 
-            info!("📡 OrderBook event stream created successfully from block {}", event_start_block);
+            // 处理订阅的日志
+            while let Some(log) = subscription.next().await {
+                // 更新已处理的区块号
+                if let Some(block_num) = log.block_number {
+                    let current = last_processed_block.load(Ordering::SeqCst);
+                    if block_num.as_u64() > current {
+                        last_processed_block.store(block_num.as_u64(), Ordering::SeqCst);
+                    }
+                }
 
-            // 处理事件流
-            while let Some(event_result) = event_stream.next().await {
-                match event_result {
-                    Ok(event) => {
-                        Self::handle_orderbook_event(event, &state, &storage).await;
-                    }
-                    Err(e) => {
-                        warn!("Error receiving OrderBook event: {}, will retry...", e);
-                        break; // 跳出内层循环，重新创建事件流
-                    }
+                // 尝试解析事件
+                let raw_log = RawLog {
+                    topics: log.topics.clone(),
+                    data: log.data.to_vec(),
+                };
+                if let Ok(event) = OrderBookEvents::decode_log(&raw_log) {
+                    Self::handle_orderbook_event(event, &state, &storage).await;
+                } else {
+                    debug!("Failed to parse OrderBook log: {:?}", log);
                 }
             }
 
-            warn!("OrderBook event stream ended, reconnecting in 2s...");
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            // 订阅结束，准备重连
+            warn!("⚠️ OrderBook WebSocket subscription ended, reconnecting...");
+            retry_count += 1;
+            let delay = std::cmp::min(2u64.pow(retry_count.min(5)), MAX_RETRY_DELAY);
+            tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
         }
     }
 
@@ -765,41 +792,105 @@ impl StateSynchronizer {
                     created.price | (U256::one() << 255)
                 };
 
-                if created.is_ask {
-                    let old_head = orderbook.ask_head;
-                    if old_head.is_zero() || created.price < old_head {
-                        if !old_head.is_zero() {
-                            let old_head_key = old_head;
-                            if let Some(old_head_level) = orderbook.price_levels.get_mut(&old_head_key) {
-                                old_head_level.prev_price = created.price;
-                            }
-                            if let Some(new_level) = orderbook.price_levels.get_mut(&level_key) {
-                                new_level.next_price = old_head;
-                            }
-                        }
+                // Find the correct insert position by traversing the linked list
+                // For Ask: prices are sorted low to high (head = lowest)
+                // For Bid: prices are sorted high to low (head = highest)
+                let (head, get_key): (U256, Box<dyn Fn(U256) -> U256>) = if created.is_ask {
+                    (orderbook.ask_head, Box::new(|p| p))
+                } else {
+                    (orderbook.bid_head, Box::new(|p| p | (U256::one() << 255)))
+                };
+
+                if head.is_zero() {
+                    // Empty list - this becomes both head and tail
+                    if created.is_ask {
                         orderbook.ask_head = created.price;
-                    }
-                    let old_tail = orderbook.ask_tail;
-                    if old_tail.is_zero() || created.price > old_tail {
                         orderbook.ask_tail = created.price;
+                    } else {
+                        orderbook.bid_head = created.price;
+                        orderbook.bid_tail = created.price;
                     }
                 } else {
-                    let old_head = orderbook.bid_head;
-                    if old_head.is_zero() || created.price > old_head {
-                        if !old_head.is_zero() {
-                            let old_head_key = old_head | (U256::one() << 255);
-                            if let Some(old_head_level) = orderbook.price_levels.get_mut(&old_head_key) {
-                                old_head_level.prev_price = created.price;
+                    // Find insert position
+                    let mut current = head;
+                    let mut prev = U256::zero();
+                    let mut insert_after = U256::zero();
+
+                    while !current.is_zero() {
+                        let current_key = get_key(current);
+                        if let Some(level) = orderbook.price_levels.get(&current_key) {
+                            let should_insert_before = if created.is_ask {
+                                // Ask: insert before first level with price > new price
+                                current > created.price
+                            } else {
+                                // Bid: insert before first level with price < new price
+                                current < created.price
+                            };
+
+                            if should_insert_before {
+                                insert_after = prev;
+                                break;
                             }
-                            if let Some(new_level) = orderbook.price_levels.get_mut(&level_key) {
-                                new_level.next_price = old_head;
+
+                            prev = current;
+                            current = level.next_price;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // If we reached the end without finding insert point, insert at tail
+                    if current.is_zero() {
+                        insert_after = prev;
+                    }
+
+                    if insert_after.is_zero() {
+                        // Insert at head
+                        let old_head = head;
+                        let old_head_key = get_key(old_head);
+                        if let Some(old_head_level) = orderbook.price_levels.get_mut(&old_head_key) {
+                            old_head_level.prev_price = created.price;
+                        }
+                        if let Some(new_level) = orderbook.price_levels.get_mut(&level_key) {
+                            new_level.next_price = old_head;
+                        }
+                        if created.is_ask {
+                            orderbook.ask_head = created.price;
+                        } else {
+                            orderbook.bid_head = created.price;
+                        }
+                    } else {
+                        // Insert after insert_after
+                        let insert_after_key = get_key(insert_after);
+                        let next_price = orderbook.price_levels.get(&insert_after_key)
+                            .map(|l| l.next_price)
+                            .unwrap_or(U256::zero());
+
+                        // Update new level's pointers
+                        if let Some(new_level) = orderbook.price_levels.get_mut(&level_key) {
+                            new_level.prev_price = insert_after;
+                            new_level.next_price = next_price;
+                        }
+
+                        // Update insert_after's next pointer
+                        if let Some(prev_level) = orderbook.price_levels.get_mut(&insert_after_key) {
+                            prev_level.next_price = created.price;
+                        }
+
+                        // Update next level's prev pointer
+                        if !next_price.is_zero() {
+                            let next_key = get_key(next_price);
+                            if let Some(next_level) = orderbook.price_levels.get_mut(&next_key) {
+                                next_level.prev_price = created.price;
+                            }
+                        } else {
+                            // Insert at tail
+                            if created.is_ask {
+                                orderbook.ask_tail = created.price;
+                            } else {
+                                orderbook.bid_tail = created.price;
                             }
                         }
-                        orderbook.bid_head = created.price;
-                    }
-                    let old_tail = orderbook.bid_tail;
-                    if old_tail.is_zero() || created.price < old_tail {
-                        orderbook.bid_tail = created.price;
                     }
                 }
 
@@ -987,50 +1078,70 @@ impl StateSynchronizer {
     /// 监听 Sequencer 事件并更新 GlobalState
     /// 注意：启动时已通过 RPC 读取了所有 pending requests
     /// 这里只监听新产生的事件，不再使用 RPC 读取 request
+    /// 使用 WebSocket 订阅，断开后自动重连
     async fn watch_sequencer_events(
         sequencer: Sequencer<Provider<Ws>>,
         state: GlobalState,
         storage: Option<MongoStorage>,
         from_block: u64,
+        last_processed_block: Arc<AtomicU64>,
     ) -> Result<()> {
-        info!("📡 Starting Sequencer event listener from block {}", from_block);
+        let mut retry_count = 0;
+        const MAX_RETRY_DELAY: u64 = 30; // 最大重试延迟 30 秒
 
-        // 使用 from_block + 1 因为 from_block 的状态已经通过 RPC 同步了
-        let event_start_block = from_block + 1;
-
-        // 使用 events() 监听所有事件，带重试逻辑
         loop {
-            let events_filter = sequencer.events().from_block(event_start_block);
+            let current_from_block = last_processed_block.load(Ordering::SeqCst);
+            // 使用 current_from_block + 1 因为 from_block 的状态已经通过 RPC 同步了
+            let event_start_block = current_from_block + 1;
 
-            let mut event_stream = match events_filter.stream().await {
-                Ok(stream) => stream,
+            info!("📡 Starting Sequencer event listener from block {} (retry: {})", event_start_block, retry_count);
+
+            // 使用真正的 WebSocket 订阅 (subscribe_logs)
+            let filter = sequencer.events().from_block(event_start_block).filter;
+            let client = sequencer.client();
+
+            let mut subscription = match client.subscribe_logs(&filter).await {
+                Ok(sub) => {
+                    retry_count = 0; // 成功连接，重置重试计数
+                    info!("📡 Sequencer WebSocket subscription created successfully from block {}", event_start_block);
+                    sub
+                }
                 Err(e) => {
-                    debug!(
-                        "Sequencer event stream creation failed (block {} may not exist yet): {}, retrying in 2s...",
-                        event_start_block, e
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                    continue;
+                    retry_count += 1;
+                    let delay = std::cmp::min(2u64.pow(retry_count.min(5)), MAX_RETRY_DELAY);
+                    warn!("Failed to subscribe to Sequencer logs: {}, retrying in {} seconds...", e, delay);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                    continue; // 重试订阅
                 }
             };
 
-            info!("📡 Sequencer event stream created successfully from block {}", event_start_block);
+            // 处理订阅的日志
+            while let Some(log) = subscription.next().await {
+                // 更新已处理的区块号
+                if let Some(block_num) = log.block_number {
+                    let current = last_processed_block.load(Ordering::SeqCst);
+                    if block_num.as_u64() > current {
+                        last_processed_block.store(block_num.as_u64(), Ordering::SeqCst);
+                    }
+                }
 
-            // 处理事件流
-            while let Some(event_result) = event_stream.next().await {
-                match event_result {
-                    Ok(event) => {
-                        Self::handle_sequencer_event(event, &state, &storage, from_block).await;
-                    }
-                    Err(e) => {
-                        warn!("Error receiving Sequencer event: {}, will retry...", e);
-                        break; // 跳出内层循环，重新创建事件流
-                    }
+                // 尝试解析事件
+                let raw_log = RawLog {
+                    topics: log.topics.clone(),
+                    data: log.data.to_vec(),
+                };
+                if let Ok(event) = SequencerEvents::decode_log(&raw_log) {
+                    Self::handle_sequencer_event(event, &state, &storage, from_block).await;
+                } else {
+                    debug!("Failed to parse Sequencer log: {:?}", log);
                 }
             }
 
-            warn!("Sequencer event stream ended, reconnecting in 2s...");
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            // 订阅结束，准备重连
+            warn!("⚠️ Sequencer WebSocket subscription ended, reconnecting...");
+            retry_count += 1;
+            let delay = std::cmp::min(2u64.pow(retry_count.min(5)), MAX_RETRY_DELAY);
+            tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
         }
     }
 

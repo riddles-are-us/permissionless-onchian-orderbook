@@ -70,22 +70,8 @@ echo "  OrderBook: $ORDERBOOK"
 echo "  Sequencer: $SEQUENCER"
 echo ""
 
-# 步骤 2: 准备测试数据
-echo "💰 步骤 2: 准备测试数据"
-echo "----------------------------------------"
-
-export USER_PRIVATE_KEY=$USER_KEY
-
-forge script script/PrepareTest.s.sol \
-    --rpc-url $ANVIL_RPC \
-    --broadcast \
-    --legacy
-
-echo "✅ 测试数据准备完成"
-echo ""
-
-# 步骤 3: 生成 Matcher 配置文件
-echo "⚙️  步骤 3: 生成 Matcher 配置文件"
+# 步骤 2: 生成 Matcher 配置文件
+echo "⚙️  步骤 2: 生成 Matcher 配置文件"
 echo "----------------------------------------"
 
 cat > matcher/config.toml <<EOF
@@ -116,108 +102,64 @@ EOF
 echo "✅ 配置文件已生成: matcher/config.toml"
 echo ""
 
-# 显示队列状态
-echo "📊 当前队列状态:"
-QUEUE_LEN=$(cast call $SEQUENCER "getQueueLength(uint256)" 100 --rpc-url $ANVIL_RPC)
-echo "  待处理订单数: $QUEUE_LEN"
+# 显示测试说明
 echo ""
-
-# 步骤 4: 说明如何运行 Matcher
-echo "🚀 步骤 4: 运行 Matcher"
+echo "═══════════════════════════════════════════════════════════════════"
+echo "  分阶段测试流程"
+echo "═══════════════════════════════════════════════════════════════════"
+echo ""
+echo "🚀 首先启动 Matcher (在新终端):"
+echo ""
+echo "   cd matcher && cargo run -- --log-level debug"
+echo ""
+echo "═══════════════════════════════════════════════════════════════════"
+echo ""
+echo "📋 Phase 1: 限价单测试"
 echo "----------------------------------------"
+echo "  1. 运行测试脚本:"
+echo "     export PRIVATE_KEY=$DEPLOYER_KEY"
+echo "     export USER_PRIVATE_KEY=$USER_KEY"
+echo "     forge script script/TestPhase1_LimitOrders.s.sol --rpc-url $ANVIL_RPC --broadcast --legacy"
 echo ""
-echo "在新终端中运行以下命令启动 Matcher:"
+echo "  2. 等待 Matcher 处理 (观察日志)"
 echo ""
-echo "  cd matcher"
-echo "  cargo run -- --log-level debug"
+echo "  3. 验证结果:"
+echo "     forge script script/VerifyResults.s.sol --sig 'verifyPhase1()' --rpc-url $ANVIL_RPC"
 echo ""
-echo "或者使用已编译的二进制:"
+echo "═══════════════════════════════════════════════════════════════════"
 echo ""
-echo "  cd matcher"
-echo "  ./target/debug/matcher --log-level debug"
+echo "📋 Phase 2: 市价单测试"
+echo "----------------------------------------"
+echo "  1. 运行测试脚本:"
+echo "     forge script script/TestPhase2_MarketOrders.s.sol --rpc-url $ANVIL_RPC --broadcast --legacy"
 echo ""
-echo "Matcher 启动后会自动:"
-echo "  1. 同步当前区块链状态"
-echo "  2. 加载 Sequencer 队列中的请求"
-echo "  3. 计算订单插入位置"
-echo "  4. 批量提交到 OrderBook"
+echo "  2. 等待 Matcher 处理"
 echo ""
-
-# 创建验证脚本
-cat > verify_results.sh <<'EOF'
-#!/bin/bash
-
-SEQUENCER=$(jq -r '.sequencer' deployments.json)
-ORDERBOOK=$(jq -r '.orderbook' deployments.json)
-PAIR_ID=$(cast keccak "WETH/USDC")
-RPC="http://127.0.0.1:8545"
-
-echo "🔍 验证 Matcher 执行结果"
-echo "========================"
+echo "  3. 验证结果:"
+echo "     forge script script/VerifyResults.s.sol --sig 'verifyPhase2()' --rpc-url $ANVIL_RPC"
 echo ""
-
-echo "📦 队列状态:"
-QUEUE_LEN=$(cast call $SEQUENCER "getQueueLength(uint256)" 100 --rpc-url $RPC)
-echo "  待处理订单: $QUEUE_LEN"
-
-if [ "$QUEUE_LEN" = "0" ]; then
-    echo "  ✅ 队列已清空"
-else
-    echo "  ⚠️  还有订单待处理"
-fi
+echo "═══════════════════════════════════════════════════════════════════"
 echo ""
-
-echo "📊 订单簿状态:"
-BOOK_DATA=$(cast call $ORDERBOOK "getTradingPairData(bytes32)" $PAIR_ID --rpc-url $RPC)
-BID_HEAD=$(echo $BOOK_DATA | awk '{print $1}')
-ASK_HEAD=$(echo $BOOK_DATA | awk '{print $2}')
-
-echo "  Bid 头部层级 ID: $BID_HEAD"
-echo "  Ask 头部层级 ID: $ASK_HEAD"
-
-if [ "$BID_HEAD" != "0" ]; then
-    echo ""
-    echo "💰 Bid 价格层级:"
-
-    LEVEL=$BID_HEAD
-    for i in {1..5}; do
-        if [ "$LEVEL" = "0" ]; then
-            break
-        fi
-
-        LEVEL_DATA=$(cast call $ORDERBOOK "priceLevels(uint256)" $LEVEL --rpc-url $RPC)
-        PRICE=$(echo $LEVEL_DATA | awk '{print $1}')
-        VOLUME=$(echo $LEVEL_DATA | awk '{print $2}')
-        NEXT=$(echo $LEVEL_DATA | awk '{print $5}')
-
-        PRICE_DISP=$(awk "BEGIN {printf \"%.2f\", $PRICE / 1e8}")
-        VOLUME_DISP=$(awk "BEGIN {printf \"%.4f\", $VOLUME / 1e8}")
-
-        echo "  Level $i: $PRICE_DISP USDC x $VOLUME_DISP WETH"
-
-        LEVEL=$NEXT
-    done
-fi
-
-if [ "$ASK_HEAD" != "0" ]; then
-    echo ""
-    echo "💵 Ask 价格层级:"
-    echo "  (当前无卖单)"
-fi
-
+echo "📋 Phase 3: 撤单测试"
+echo "----------------------------------------"
+echo "  1. 下单 (准备撤销):"
+echo "     forge script script/TestPhase3_RemoveOrders.s.sol --rpc-url $ANVIL_RPC --broadcast --legacy"
 echo ""
-if [ "$QUEUE_LEN" = "0" ] && [ "$BID_HEAD" != "0" ]; then
-    echo "✅ 测试成功! Matcher 已正确处理订单"
-else
-    echo "⚠️  请检查 Matcher 日志"
-fi
-EOF
-
-chmod +x verify_results.sh
-
-echo "💡 提示:"
-echo "  - Matcher 运行后，在另一个终端运行 ./verify_results.sh 查看结果"
-echo "  - 使用 Ctrl+C 停止 Matcher"
+echo "  2. 等待 Matcher 处理下单请求"
 echo ""
-echo "✨ 准备完成! 现在可以启动 Matcher 进行测试"
+echo "  3. 提交撤单请求:"
+echo "     forge script script/TestPhase3_RemoveOrders.s.sol:TestPhase3_RemoveOrders_Part2 --rpc-url $ANVIL_RPC --broadcast --legacy"
+echo ""
+echo "  4. 等待 Matcher 处理撤单请求"
+echo ""
+echo "  5. 验证结果:"
+echo "     forge script script/VerifyResults.s.sol --sig 'verifyPhase3()' --rpc-url $ANVIL_RPC"
+echo ""
+echo "═══════════════════════════════════════════════════════════════════"
+echo ""
+echo "💡 通用验证命令:"
+echo "   forge script script/VerifyResults.s.sol --rpc-url $ANVIL_RPC"
+echo "   forge script script/VerifyResults.s.sol --sig 'runDetailed()' --rpc-url $ANVIL_RPC"
+echo ""
+echo "✨ 准备完成! 按照上述步骤进行测试"
 echo ""
