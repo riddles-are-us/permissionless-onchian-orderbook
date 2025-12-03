@@ -15,66 +15,50 @@ rpc_url = "wss://eth-sepolia.g.alchemy.com/v2/P2hms_foHU-rHhmt8hcpU"
 chain_id = 11155111
 
 [contracts]
-# Sequencer 合约地址 (Sepolia - 2025-12-02 部署，支持新 OrderFilled 事件)
-sequencer = "0xf131c96a5473F880597ea61e5203D44B087A22a4"
+# Sequencer 合约地址 (Sepolia - 带 matchAll 功能、新 OrderFilled 事件和 maker-taker 价格逻辑)
+sequencer = "0xBF4AF7D81c5C68B606b7EF3E9746c92E30d37d73"
 
-# OrderBook 合约地址 (Sepolia - 2025-12-02 部署，支持新 OrderFilled 事件)
-orderbook = "0x63EDb654d3Aa1681625fA325Da83cD02449f9298"
+# OrderBook 合约地址 (Sepolia - 带 matchAll 功能、新 OrderFilled 事件和 maker-taker 价格逻辑)
+orderbook = "0x66B541F03584636299C91eB54BB18994956417CC"
 
-# Account 合约地址 (Sepolia - 2025-12-02 部署)
-account = "0xBFe1Fc928d92Dd4F884386bF1689Ec5C17455a57"
+# Account 合约地址 (Sepolia - 带 matchAll 功能、新 OrderFilled 事件和 maker-taker 价格逻辑)
+account = "0x6807633813d3Fe5f46Ec584C711Aa84984841807"
 
 # Trading Pair ID (WETH/USDC)
 trading_pair = "0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816"
 
 [sync]
-# 初始同步的起始区块
-# 0 = 从最新区块开始
-# 其他值 = 从指定区块开始同步
-# Sepolia 2025-12-02 部署区块
-start_block = 9753169
+# 初始同步的起始区块 (新部署的区块)
+start_block = 9759321
 
 # 是否同步历史区块数据
-# true = 同步从 start_block 到当前的所有数据
-# false = 只监听新事件
 sync_historical = true
 
 [matching]
-# 每批最多处理的请求数（建议 50-200）
-# 数值越大，单次交易 gas 越高，但处理效率越高
+# 每批最多处理的请求数
 max_batch_size = 100
 
-# 匹配间隔（毫秒）
-# 数值越小，延迟越低，但可能增加无效查询
-matching_interval_ms = 1000
+# 匹配间隔（毫秒）- Sepolia 区块时间约 12 秒
+matching_interval_ms = 3000
 
 [executor]
-# ⚠️ 警告：不要将真实私钥提交到版本控制！
-# 生产环境应使用环境变量或密钥管理系统
+# 执行者私钥 (请替换为你自己的私钥)
+private_key = "0xYOUR_PRIVATE_KEY_HERE"
 
-# 执行者私钥（用于发送交易）
-# 示例：Hardhat Account #0
-private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-
-# Gas 价格（gwei）
-# 主网建议值：根据网络拥堵情况调整（通常 10-50）
-# 测试网/本地：1
-gas_price_gwei = 1
+# Gas 价格（gwei）- Sepolia 通常 1-5 gwei
+gas_price_gwei = 2
 
 # Gas 限制
-# 建议预留充足的 gas
 gas_limit = 5000000
 
 [mongodb]
-# 启用 MongoDB 持久化存储
-# 需要安装 MongoDB 或使用 Docker: docker-compose up -d mongodb
-enabled = false
+# 启用 MongoDB 持久化
+enabled = true
 uri = "mongodb://localhost:27017"
-database = "orderbook"
+database = "orderbook_0x66B541F03584636299C91eB54BB18994956417CC"
 
 [api]
-# 启用 HTTP API 服务器
-# 依赖 MongoDB，提供 REST API 查询订单和交易数据
-enabled = false
-host = "127.0.0.1"
+# 启用 HTTP API
+enabled = true
+host = "0.0.0.0"
 port = 8080
