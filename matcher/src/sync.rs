@@ -417,6 +417,13 @@ impl StateSynchronizer {
 
                 HistoricalEvent::Trade(trade, block_number, _) => {
                     let trading_pair_hex = format!("0x{}", hex::encode(trade.trading_pair));
+                    let price_str = trade.price.to_string();
+                    let amount_str = trade.amount.to_string();
+                    let timestamp_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64;
+
                     let stored_trade = StoredTrade {
                         trade_id: format!(
                             "{}-{}-{}",
@@ -424,13 +431,13 @@ impl StateSynchronizer {
                             trade.buy_order_id,
                             trade.sell_order_id
                         ),
-                        trading_pair: trading_pair_hex,
+                        trading_pair: trading_pair_hex.clone(),
                         buy_order_id: trade.buy_order_id.to_string(),
                         sell_order_id: trade.sell_order_id.to_string(),
                         buyer: format!("{:?}", trade.buyer).to_lowercase(),
                         seller: format!("{:?}", trade.seller).to_lowercase(),
-                        price: trade.price.to_string(),
-                        amount: trade.amount.to_string(),
+                        price: price_str.clone(),
+                        amount: amount_str.clone(),
                         traded_at: BsonDateTime::now(),
                         block_number,
                         tx_hash: None,
@@ -441,6 +448,16 @@ impl StateSynchronizer {
                         if !e.to_string().contains("duplicate key") {
                             warn!("Failed to save historical trade to MongoDB: {}", e);
                         }
+                    }
+
+                    // 更新K线数据 - 直接使用 U256 进行精确计算
+                    if let Err(e) = storage.update_klines(
+                        &trading_pair_hex,
+                        trade.price,
+                        trade.amount,
+                        timestamp_ms,
+                    ).await {
+                        warn!("Failed to update klines for historical trade: {}", e);
                     }
                 }
 
@@ -977,9 +994,16 @@ impl StateSynchronizer {
                     trade.amount
                 );
 
-                // Save trade to MongoDB
+                // Save trade to MongoDB and update klines
                 if let Some(ref storage) = storage {
                     let trading_pair_hex = format!("0x{}", hex::encode(trade.trading_pair));
+                    let price_str = trade.price.to_string();
+                    let amount_str = trade.amount.to_string();
+                    let timestamp_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64;
+
                     let stored_trade = StoredTrade {
                         trade_id: format!(
                             "{}-{}-{}",
@@ -987,13 +1011,13 @@ impl StateSynchronizer {
                             trade.buy_order_id,
                             trade.sell_order_id
                         ),
-                        trading_pair: trading_pair_hex,
+                        trading_pair: trading_pair_hex.clone(),
                         buy_order_id: trade.buy_order_id.to_string(),
                         sell_order_id: trade.sell_order_id.to_string(),
                         buyer: format!("{:?}", trade.buyer),
                         seller: format!("{:?}", trade.seller),
-                        price: trade.price.to_string(),
-                        amount: trade.amount.to_string(),
+                        price: price_str.clone(),
+                        amount: amount_str.clone(),
                         traded_at: BsonDateTime::now(),
                         block_number: 0, // Not available from event stream directly
                         tx_hash: None,
@@ -1006,6 +1030,18 @@ impl StateSynchronizer {
                             "💾 Trade saved: buy={}, sell={}",
                             trade.buy_order_id, trade.sell_order_id
                         );
+                    }
+
+                    // 更新K线数据 - 直接使用 U256 进行精确计算
+                    if let Err(e) = storage.update_klines(
+                        &trading_pair_hex,
+                        trade.price,
+                        trade.amount,
+                        timestamp_ms,
+                    ).await {
+                        warn!("Failed to update klines: {}", e);
+                    } else {
+                        debug!("📊 Klines updated for trading pair {}", trading_pair_hex);
                     }
                 }
             }

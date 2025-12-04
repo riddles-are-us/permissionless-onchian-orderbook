@@ -109,6 +109,142 @@ pub struct StoredOrder {
     pub tx_hash: Option<String>,
 }
 
+/// K线时间周期
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum KlineInterval {
+    #[serde(rename = "1m")]
+    OneMinute,
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[serde(rename = "15m")]
+    FifteenMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
+    #[serde(rename = "1d")]
+    OneDay,
+    #[serde(rename = "1M")]
+    OneMonth,
+    #[serde(rename = "1y")]
+    OneYear,
+}
+
+impl KlineInterval {
+    /// 返回该周期的秒数
+    pub fn seconds(&self) -> i64 {
+        match self {
+            KlineInterval::OneMinute => 60,
+            KlineInterval::FiveMinutes => 5 * 60,
+            KlineInterval::FifteenMinutes => 15 * 60,
+            KlineInterval::OneHour => 60 * 60,
+            KlineInterval::OneDay => 24 * 60 * 60,
+            KlineInterval::OneMonth => 30 * 24 * 60 * 60,  // 近似值
+            KlineInterval::OneYear => 365 * 24 * 60 * 60,  // 近似值
+        }
+    }
+
+    /// 返回该周期的毫秒数
+    pub fn millis(&self) -> i64 {
+        self.seconds() * 1000
+    }
+
+    /// 返回所有周期
+    pub fn all() -> Vec<KlineInterval> {
+        vec![
+            KlineInterval::OneMinute,
+            KlineInterval::FiveMinutes,
+            KlineInterval::FifteenMinutes,
+            KlineInterval::OneHour,
+            KlineInterval::OneDay,
+            KlineInterval::OneMonth,
+            KlineInterval::OneYear,
+        ]
+    }
+
+    /// 将时间戳对齐到该周期的开始时间
+    pub fn align_timestamp(&self, timestamp_ms: i64) -> i64 {
+        let interval_ms = self.millis();
+        (timestamp_ms / interval_ms) * interval_ms
+    }
+
+    /// 返回周期名称 (用于MongoDB集合名)
+    pub fn name(&self) -> &'static str {
+        match self {
+            KlineInterval::OneMinute => "1m",
+            KlineInterval::FiveMinutes => "5m",
+            KlineInterval::FifteenMinutes => "15m",
+            KlineInterval::OneHour => "1h",
+            KlineInterval::OneDay => "1d",
+            KlineInterval::OneMonth => "1M",
+            KlineInterval::OneYear => "1y",
+        }
+    }
+}
+
+impl std::fmt::Display for KlineInterval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+impl std::str::FromStr for KlineInterval {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "1m" => Ok(KlineInterval::OneMinute),
+            "5m" => Ok(KlineInterval::FiveMinutes),
+            "15m" => Ok(KlineInterval::FifteenMinutes),
+            "1h" => Ok(KlineInterval::OneHour),
+            "1d" => Ok(KlineInterval::OneDay),
+            "1M" => Ok(KlineInterval::OneMonth),
+            "1y" => Ok(KlineInterval::OneYear),
+            _ => Err(format!("Invalid interval: {}", s)),
+        }
+    }
+}
+
+/// K线数据 (OHLCV 蜡烛图)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredKline {
+    /// 唯一ID: trading_pair-interval-open_time
+    #[serde(rename = "_id")]
+    pub kline_id: String,
+
+    /// 交易对
+    pub trading_pair: String,
+
+    /// 时间周期
+    pub interval: String,
+
+    /// 开盘时间 (该周期的起始时间戳，毫秒)
+    pub open_time: i64,
+
+    /// 收盘时间 (该周期的结束时间戳，毫秒)
+    pub close_time: i64,
+
+    /// 开盘价
+    pub open: String,
+
+    /// 最高价
+    pub high: String,
+
+    /// 最低价
+    pub low: String,
+
+    /// 收盘价 (最新价)
+    pub close: String,
+
+    /// 成交量 (base token)
+    pub volume: String,
+
+    /// 成交额 (quote token = price * volume)
+    pub quote_volume: String,
+
+    /// 成交笔数
+    pub trade_count: u64,
+}
+
 /// 交易记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredTrade {
@@ -225,6 +361,17 @@ impl MongoStorage {
 
         trades.create_indexes(trade_indexes, None).await?;
 
+        // K线索引
+        let klines = self.klines_collection();
+        let kline_indexes = vec![
+            IndexModel::builder()
+                .keys(doc! { "trading_pair": 1, "interval": 1, "open_time": -1 })
+                .options(IndexOptions::builder().build())
+                .build(),
+        ];
+
+        klines.create_indexes(kline_indexes, None).await?;
+
         Ok(())
     }
 
@@ -234,6 +381,10 @@ impl MongoStorage {
 
     fn trades_collection(&self) -> Collection<StoredTrade> {
         self.client.database(&self.database).collection("trades")
+    }
+
+    fn klines_collection(&self) -> Collection<StoredKline> {
+        self.client.database(&self.database).collection("klines")
     }
 
     /// 保存或更新订单
@@ -445,5 +596,149 @@ impl MongoStorage {
         }
 
         Ok((bids, asks))
+    }
+
+    /// 更新K线数据 (根据交易更新所有时间周期的K线)
+    ///
+    /// 当收到一笔交易时，调用此方法更新所有时间周期的K线
+    /// 使用 U256 进行所有数值计算以保持精度
+    pub async fn update_klines(
+        &self,
+        trading_pair: &str,
+        price: ethers::types::U256,
+        amount: ethers::types::U256,
+        timestamp_ms: i64,
+    ) -> Result<()> {
+        let collection = self.klines_collection();
+
+        // 计算 quote_volume = price * amount (使用 U256 防止溢出)
+        let quote_volume = price.saturating_mul(amount);
+
+        // 对每个时间周期更新K线
+        for interval in KlineInterval::all() {
+            let open_time = interval.align_timestamp(timestamp_ms);
+            let close_time = open_time + interval.millis() - 1;
+            let kline_id = format!("{}-{}-{}", trading_pair, interval.name(), open_time);
+
+            // 尝试更新现有K线，如果不存在则创建新的
+            let filter = doc! { "_id": &kline_id };
+
+            // 使用 findOneAndUpdate 或 upsert
+            let existing = collection.find_one(filter.clone(), None).await?;
+
+            if let Some(kline) = existing {
+                // 更新现有K线 - 使用 U256 进行比较和计算
+                let current_high = ethers::types::U256::from_dec_str(&kline.high).unwrap_or_default();
+                let current_low = ethers::types::U256::from_dec_str(&kline.low).unwrap_or(ethers::types::U256::MAX);
+                let current_volume = ethers::types::U256::from_dec_str(&kline.volume).unwrap_or_default();
+                let current_quote_volume = ethers::types::U256::from_dec_str(&kline.quote_volume).unwrap_or_default();
+
+                let new_high = if price > current_high { price } else { current_high };
+                let new_low = if price < current_low { price } else { current_low };
+                let new_volume = current_volume.saturating_add(amount);
+                let new_quote_volume = current_quote_volume.saturating_add(quote_volume);
+
+                let update = doc! {
+                    "$set": {
+                        "high": new_high.to_string(),
+                        "low": new_low.to_string(),
+                        "close": price.to_string(),
+                        "volume": new_volume.to_string(),
+                        "quote_volume": new_quote_volume.to_string(),
+                    },
+                    "$inc": {
+                        "trade_count": 1_i64
+                    }
+                };
+
+                collection.update_one(filter, update, None).await?;
+            } else {
+                // 创建新K线
+                let new_kline = StoredKline {
+                    kline_id: kline_id.clone(),
+                    trading_pair: trading_pair.to_string(),
+                    interval: interval.name().to_string(),
+                    open_time,
+                    close_time,
+                    open: price.to_string(),
+                    high: price.to_string(),
+                    low: price.to_string(),
+                    close: price.to_string(),
+                    volume: amount.to_string(),
+                    quote_volume: quote_volume.to_string(),
+                    trade_count: 1,
+                };
+
+                collection.insert_one(&new_kline, None).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 查询K线数据
+    pub async fn get_klines(
+        &self,
+        trading_pair: &str,
+        interval: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<StoredKline>> {
+        let collection = self.klines_collection();
+
+        let mut filter = doc! {
+            "trading_pair": trading_pair,
+            "interval": interval
+        };
+
+        // 添加时间范围过滤
+        if start_time.is_some() || end_time.is_some() {
+            let mut time_filter = doc! {};
+            if let Some(start) = start_time {
+                time_filter.insert("$gte", start);
+            }
+            if let Some(end) = end_time {
+                time_filter.insert("$lte", end);
+            }
+            filter.insert("open_time", time_filter);
+        }
+
+        let options = mongodb::options::FindOptions::builder()
+            .sort(doc! { "open_time": -1 })
+            .limit(limit)
+            .build();
+
+        let mut cursor = collection.find(filter, options).await?;
+        let mut klines = Vec::new();
+
+        while cursor.advance().await? {
+            klines.push(cursor.deserialize_current()?);
+        }
+
+        // 反转结果，使其按时间正序排列
+        klines.reverse();
+
+        Ok(klines)
+    }
+
+    /// 获取最新的K线数据 (用于实时显示)
+    pub async fn get_latest_kline(
+        &self,
+        trading_pair: &str,
+        interval: &str,
+    ) -> Result<Option<StoredKline>> {
+        let collection = self.klines_collection();
+
+        let filter = doc! {
+            "trading_pair": trading_pair,
+            "interval": interval
+        };
+
+        let options = mongodb::options::FindOneOptions::builder()
+            .sort(doc! { "open_time": -1 })
+            .build();
+
+        Ok(collection.find_one(filter, options).await?)
     }
 }

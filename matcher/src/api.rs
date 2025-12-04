@@ -1,6 +1,6 @@
 use crate::config::ApiConfig;
 use crate::state::GlobalState;
-use crate::storage::{MongoStorage, OrderStatus, StoredOrder};
+use crate::storage::{KlineInterval, MongoStorage, OrderStatus, StoredKline, StoredOrder};
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use ethers::types::U256;
@@ -57,6 +57,58 @@ pub struct TradeQuery {
 #[derive(Deserialize)]
 pub struct OrderbookQuery {
     pub depth: Option<i64>,
+}
+
+/// K线查询参数
+#[derive(Deserialize)]
+pub struct KlineQuery {
+    /// 时间周期: 1m, 5m, 15m, 1h, 1d, 1M, 1y
+    pub interval: String,
+    /// 开始时间 (毫秒时间戳)
+    pub start_time: Option<i64>,
+    /// 结束时间 (毫秒时间戳)
+    pub end_time: Option<i64>,
+    /// 返回数量限制 (默认100，最大500)
+    pub limit: Option<i64>,
+}
+
+/// K线响应 (兼容交易所API格式)
+#[derive(Serialize)]
+pub struct KlineResponse {
+    /// 开盘时间 (毫秒)
+    pub open_time: i64,
+    /// 收盘时间 (毫秒)
+    pub close_time: i64,
+    /// 开盘价
+    pub open: String,
+    /// 最高价
+    pub high: String,
+    /// 最低价
+    pub low: String,
+    /// 收盘价
+    pub close: String,
+    /// 成交量 (base token)
+    pub volume: String,
+    /// 成交额 (quote token)
+    pub quote_volume: String,
+    /// 成交笔数
+    pub trade_count: u64,
+}
+
+impl From<StoredKline> for KlineResponse {
+    fn from(kline: StoredKline) -> Self {
+        KlineResponse {
+            open_time: kline.open_time,
+            close_time: kline.close_time,
+            open: kline.open,
+            high: kline.high,
+            low: kline.low,
+            close: kline.close,
+            volume: kline.volume,
+            quote_volume: kline.quote_volume,
+            trade_count: kline.trade_count,
+        }
+    }
 }
 
 /// 订单簿响应
@@ -225,6 +277,41 @@ async fn get_orderbook(
     match state.storage.get_orderbook(&trading_pair, depth).await {
         Ok((bids, asks)) => {
             HttpResponse::Ok().json(ApiResponse::success(OrderbookResponse { bids, asks }))
+        }
+        Err(e) => HttpResponse::InternalServerError().json(ApiResponse::<()>::error(&e.to_string())),
+    }
+}
+
+/// 获取K线数据
+/// GET /api/v1/klines/{trading_pair}?interval=1m&start_time=xxx&end_time=xxx&limit=100
+async fn get_klines(
+    state: web::Data<Arc<ApiState>>,
+    path: web::Path<String>,
+    query: web::Query<KlineQuery>,
+) -> impl Responder {
+    let trading_pair = path.into_inner();
+    let limit = query.limit.unwrap_or(100).min(500);
+
+    // 验证 interval 参数
+    if !matches!(
+        query.interval.as_str(),
+        "1m" | "5m" | "15m" | "1h" | "1d" | "1M" | "1y"
+    ) {
+        return HttpResponse::BadRequest().json(ApiResponse::<()>::error(
+            "Invalid interval. Valid values: 1m, 5m, 15m, 1h, 1d, 1M, 1y"
+        ));
+    }
+
+    match state.storage.get_klines(
+        &trading_pair,
+        &query.interval,
+        query.start_time,
+        query.end_time,
+        limit,
+    ).await {
+        Ok(klines) => {
+            let response: Vec<KlineResponse> = klines.into_iter().map(|k| k.into()).collect();
+            HttpResponse::Ok().json(ApiResponse::success(response))
         }
         Err(e) => HttpResponse::InternalServerError().json(ApiResponse::<()>::error(&e.to_string())),
     }
@@ -439,6 +526,8 @@ pub async fn start_api_server(config: ApiConfig, storage: MongoStorage, global_s
             .route("/api/v1/users/{trader}/orders/active", web::get().to(get_user_active_orders))
             // 订单簿
             .route("/api/v1/orderbook/{trading_pair}", web::get().to(get_orderbook))
+            // K线数据
+            .route("/api/v1/klines/{trading_pair}", web::get().to(get_klines))
             // 系统概述
             .route("/api/v1/overview", web::get().to(get_system_overview))
             // 调试接口
