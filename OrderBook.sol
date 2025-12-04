@@ -71,7 +71,7 @@ contract OrderBook {
     event MarketOrderInserted(bytes32 indexed tradingPair, uint256 indexed orderId, bool isAsk, uint256 amount);
     event MarketOrderRemoved(bytes32 indexed tradingPair, uint256 indexed orderId);
     event PriceLevelCreated(bytes32 indexed tradingPair, uint256 indexed price, bool isAsk);
-    event PriceLevelRemoved(bytes32 indexed tradingPair, uint256 indexed price);
+    event PriceLevelRemoved(bytes32 indexed tradingPair, uint256 indexed price, bool indexed isAsk);
     event SequencerSet(address indexed sequencer);
     event AccountSet(address indexed account);
     event Trade(
@@ -772,7 +772,7 @@ contract OrderBook {
         // 删除价格层级
         delete priceLevels[levelKey];
 
-        emit PriceLevelRemoved(tradingPair, priceLevelId);
+        emit PriceLevelRemoved(tradingPair, priceLevelId, isAsk);
     }
 
     // ============ 查询函数 ============
@@ -1160,21 +1160,24 @@ contract OrderBook {
         // 计算 quote amount (用于事件)
         uint256 quoteAmount = (tradeAmount * tradePrice) / TradingConstants.PRICE_DECIMALS;
 
-        // 检查买单是否完全成交
+        // 检查订单是否完全成交
         bool bidFullyFilled = (bidOrder.filledAmount == bidOrder.amount);
+        bool askFullyFilled = (askOrder.filledAmount == askOrder.amount);
+
+        // 先触发 OrderFilled 事件，再移除订单
+        // 这确保事件顺序为: OrderFilled -> PriceLevelRemoved
+        // 买单: quoteAmount=花费的quote tokens, baseAmount=获得的base tokens
+        emit OrderFilled(tradingPair, bidOrderId, quoteAmount, tradeAmount, bidFullyFilled);
+        // 卖单: quoteAmount=获得的quote tokens, baseAmount=卖出的base tokens
+        emit OrderFilled(tradingPair, askOrderId, quoteAmount, tradeAmount, askFullyFilled);
+
+        // 移除已完全成交的订单（会触发 PriceLevelRemoved 事件）
         if (bidFullyFilled) {
             _removeFilledOrder(tradingPair, bidOrderId, false);
         }
-        // 买单: quoteAmount=花费的quote tokens, baseAmount=获得的base tokens
-        emit OrderFilled(tradingPair, bidOrderId, quoteAmount, tradeAmount, bidFullyFilled);
-
-        // 检查卖单是否完全成交
-        bool askFullyFilled = (askOrder.filledAmount == askOrder.amount);
         if (askFullyFilled) {
             _removeFilledOrder(tradingPair, askOrderId, true);
         }
-        // 卖单: quoteAmount=获得的quote tokens, baseAmount=卖出的base tokens
-        emit OrderFilled(tradingPair, askOrderId, quoteAmount, tradeAmount, askFullyFilled);
 
         return true;
     }

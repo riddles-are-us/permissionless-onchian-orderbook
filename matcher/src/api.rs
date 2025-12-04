@@ -107,6 +107,18 @@ pub struct SystemOverviewResponse {
     pub market_orders: MarketOrderStats,
 }
 
+/// 调试用订单簿状态响应
+#[derive(Serialize)]
+pub struct DebugOrderbookResponse {
+    pub ask_head: String,
+    pub ask_tail: String,
+    pub bid_head: String,
+    pub bid_tail: String,
+    pub price_levels_count: usize,
+    pub orders_count: usize,
+    pub price_level_keys: Vec<String>,
+}
+
 /// 健康检查
 async fn health() -> impl Responder {
     HttpResponse::Ok().json(ApiResponse::success("OK"))
@@ -368,6 +380,37 @@ async fn get_system_overview(
     HttpResponse::Ok().json(ApiResponse::success(response))
 }
 
+/// 调试：获取原始订单簿状态
+async fn get_debug_orderbook(state: web::Data<Arc<ApiState>>) -> impl Responder {
+    let global_state = match &state.global_state {
+        Some(gs) => gs,
+        None => {
+            return HttpResponse::ServiceUnavailable()
+                .json(ApiResponse::<()>::error("GlobalState not available"));
+        }
+    };
+
+    let orderbook = global_state.orderbook.read();
+
+    // 收集所有 price_level keys
+    let mut price_level_keys: Vec<String> = orderbook.price_levels.keys()
+        .map(|k| format!("{}", k))
+        .collect();
+    price_level_keys.sort();
+
+    let response = DebugOrderbookResponse {
+        ask_head: orderbook.ask_head.to_string(),
+        ask_tail: orderbook.ask_tail.to_string(),
+        bid_head: orderbook.bid_head.to_string(),
+        bid_tail: orderbook.bid_tail.to_string(),
+        price_levels_count: orderbook.price_levels.len(),
+        orders_count: orderbook.orders.len(),
+        price_level_keys,
+    };
+
+    HttpResponse::Ok().json(ApiResponse::success(response))
+}
+
 /// 启动 API 服务器
 pub async fn start_api_server(config: ApiConfig, storage: MongoStorage, global_state: Option<GlobalState>) -> std::io::Result<()> {
     let state = Arc::new(ApiState { storage, global_state });
@@ -398,6 +441,8 @@ pub async fn start_api_server(config: ApiConfig, storage: MongoStorage, global_s
             .route("/api/v1/orderbook/{trading_pair}", web::get().to(get_orderbook))
             // 系统概述
             .route("/api/v1/overview", web::get().to(get_system_overview))
+            // 调试接口
+            .route("/api/v1/debug/orderbook", web::get().to(get_debug_orderbook))
     })
     .bind(&bind_addr)?
     .run()

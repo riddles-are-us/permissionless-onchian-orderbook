@@ -128,13 +128,16 @@ impl StateSynchronizer {
         self.sync_match_id().await?;
 
         // 同步 OrderBook 状态到 GlobalState.orderbook
-        self.sync_orderbook_state().await?;
+        // TODO: 临时注释掉，改用 event sync 来重建订单簿状态以验证 event sync 逻辑
+        // self.sync_orderbook_state().await?;
 
         // 更新同步区块
-        self.synced_block = current_block;
+        // TODO: 临时不更新 synced_block，保持 start_block，让 watch_events 从合约部署区块开始同步
+        // self.synced_block = current_block;
         self.state.update_current_block(current_block);
 
         info!("✅ Minimal sync completed at block {}", current_block);
+        info!("   Event sync will start from block {} (deployment block)", self.synced_block);
 
         // 标记同步完成，允许 MatchingEngine 开始处理
         self.state.mark_sync_completed();
@@ -154,7 +157,8 @@ impl StateSynchronizer {
         self.sync_sequencer_state(current_block).await?;
 
         // 同步 OrderBook 状态到 GlobalState.orderbook
-        self.sync_orderbook_state().await?;
+        // TODO: 临时注释掉，改用 event sync 来重建订单簿状态以验证 event sync 逻辑
+        // self.sync_orderbook_state().await?;
 
         // 同步 matchId
         self.sync_match_id().await?;
@@ -165,11 +169,12 @@ impl StateSynchronizer {
         }
 
         // 记录同步的区块高度，后续 event 监听从这个区块开始
-        self.synced_block = current_block;
+        // TODO: 临时不更新 synced_block，保持 start_block，让 watch_events 从合约部署区块开始同步
+        // self.synced_block = current_block;
         self.state.update_current_block(current_block);
 
         info!("✅ Historical state synced at block {}", current_block);
-        info!("   Event monitoring will start from block {}", current_block);
+        info!("   Event sync will start from block {} (deployment block)", self.synced_block);
 
         // 标记历史同步完成，允许 MatchingEngine 开始处理
         self.state.mark_sync_completed();
@@ -910,12 +915,12 @@ impl StateSynchronizer {
             }
 
             OrderBookEvents::PriceLevelRemovedFilter(removed) => {
-                info!("🗑️  PriceLevelRemoved: price={}", removed.price);
+                info!("🗑️  PriceLevelRemoved: price={}, isAsk={}", removed.price, removed.is_ask);
                 let mut orderbook = state.orderbook.write();
-                let ask_key = removed.price;
-                let bid_key = removed.price | (U256::one() << 255);
 
-                if orderbook.price_levels.contains_key(&ask_key) {
+                // 直接使用 event 中的 is_ask 字段
+                if removed.is_ask {
+                    let ask_key = removed.price;
                     if let Some(level) = orderbook.price_levels.get(&ask_key) {
                         let prev = level.prev_price;
                         let next = level.next_price;
@@ -935,7 +940,9 @@ impl StateSynchronizer {
                         }
                     }
                     orderbook.price_levels.remove(&ask_key);
-                } else if orderbook.price_levels.contains_key(&bid_key) {
+                    debug!("  Removed ask price level at {}", removed.price);
+                } else {
+                    let bid_key = removed.price | (U256::one() << 255);
                     if let Some(level) = orderbook.price_levels.get(&bid_key) {
                         let prev = level.prev_price;
                         let next = level.next_price;
@@ -957,6 +964,7 @@ impl StateSynchronizer {
                         }
                     }
                     orderbook.price_levels.remove(&bid_key);
+                    debug!("  Removed bid price level at {}", removed.price);
                 }
             }
 
@@ -1030,6 +1038,43 @@ impl StateSynchronizer {
                 {
                     let mut orderbook = state.orderbook.write();
                     if filled.is_fully_filled {
+                        // Before removing the order, update the linked list in the price level
+                        if let Some(order) = orderbook.orders.get(&filled.order_id) {
+                            let is_ask = order.is_ask;
+                            let price = order.price_level;
+                            let prev_order_id = order.prev_order_id;
+                            let next_order_id = order.next_order_id;
+
+                            let level_key = if is_ask {
+                                price
+                            } else {
+                                price | (U256::one() << 255)
+                            };
+
+                            // Update prev order's next pointer
+                            if !prev_order_id.is_zero() {
+                                if let Some(prev_order) = orderbook.orders.get_mut(&prev_order_id) {
+                                    prev_order.next_order_id = next_order_id;
+                                }
+                            }
+
+                            // Update next order's prev pointer
+                            if !next_order_id.is_zero() {
+                                if let Some(next_order) = orderbook.orders.get_mut(&next_order_id) {
+                                    next_order.prev_order_id = prev_order_id;
+                                }
+                            }
+
+                            // Update price level's head/tail if needed
+                            if let Some(level) = orderbook.price_levels.get_mut(&level_key) {
+                                if level.head_order_id == filled.order_id {
+                                    level.head_order_id = next_order_id;
+                                }
+                                if level.tail_order_id == filled.order_id {
+                                    level.tail_order_id = prev_order_id;
+                                }
+                            }
+                        }
                         orderbook.orders.remove(&filled.order_id);
                     } else {
                         if let Some(order) = orderbook.orders.get_mut(&filled.order_id) {
