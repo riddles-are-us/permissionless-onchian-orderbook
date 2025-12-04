@@ -15,21 +15,21 @@ rpc_url = "wss://eth-sepolia.g.alchemy.com/v2/P2hms_foHU-rHhmt8hcpU"
 chain_id = 11155111
 
 [contracts]
-# Sequencer 合约地址 (Sepolia - 带 matchAll 功能、新 OrderFilled 事件和 maker-taker 价格逻辑)
-sequencer = "0xBF4AF7D81c5C68B606b7EF3E9746c92E30d37d73"
+# Sequencer 合约地址 (Sepolia - 最新部署，修复事件顺序)
+sequencer = "0xccc456F369f379C1a3889C936439c522Eb0D112D"
 
-# OrderBook 合约地址 (Sepolia - 带 matchAll 功能、新 OrderFilled 事件和 maker-taker 价格逻辑)
-orderbook = "0x66B541F03584636299C91eB54BB18994956417CC"
+# OrderBook 合约地址 (Sepolia - 最新部署，修复事件顺序)
+orderbook = "0x47E410aD18De60888Eef5d108d555290fd77DDd7"
 
-# Account 合约地址 (Sepolia - 带 matchAll 功能、新 OrderFilled 事件和 maker-taker 价格逻辑)
-account = "0x6807633813d3Fe5f46Ec584C711Aa84984841807"
+# Account 合约地址 (Sepolia - 最新部署，修复事件顺序)
+account = "0xdd536a2B373f699461a06bec2acbc0A7d8Dfaa34"
 
 # Trading Pair ID (WETH/USDC)
 trading_pair = "0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816"
 
 [sync]
 # 初始同步的起始区块 (新部署的区块)
-start_block = 9759321
+start_block = 9764956
 
 # 是否同步历史区块数据
 sync_historical = true
@@ -55,7 +55,7 @@ gas_limit = 5000000
 # 启用 MongoDB 持久化
 enabled = true
 uri = "mongodb://localhost:27017"
-database = "orderbook_0x66B541F03584636299C91eB54BB18994956417CC"
+database = "orderbook_0x47E410aD18De60888Eef5d108d555290fd77DDd7"
 
 [api]
 # 启用 HTTP API
