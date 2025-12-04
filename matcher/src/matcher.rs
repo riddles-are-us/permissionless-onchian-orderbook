@@ -247,8 +247,8 @@ impl MatchingEngine {
                 }
                 RequestType::PlaceOrder => {
                     if request.order_type == OrderType::Limit {
-                        // 限价单：使用 simulator 模拟插入，获取 insertAfterPrice
-                        let insert_after_price = sim.simulate_insert_order(
+                        // 限价单：使用 simulator 模拟插入，获取 insertAfterPrice 和 insertAfterOrder
+                        let (insert_after_price, insert_after_order) = sim.simulate_insert_order(
                             request.request_id,
                             request.price,
                             request.amount,
@@ -256,15 +256,15 @@ impl MatchingEngine {
                         );
 
                         debug!(
-                            "PlaceOrder {} (limit, price={}, is_ask={}): insertAfterPrice={}",
-                            request.request_id, request.price, request.is_ask, insert_after_price
+                            "PlaceOrder {} (limit, price={}, is_ask={}): insertAfterPrice={}, insertAfterOrder={}",
+                            request.request_id, request.price, request.is_ask, insert_after_price, insert_after_order
                         );
 
-                        // 添加到结果中
+                        // 添加到结果中（使用 tailOrderId 作为 insertAfterOrder 以保证 FIFO）
                         result.add_order(
                             request.request_id,
                             insert_after_price,
-                            U256::zero(), // insertAfterOrder 设为 0（插入到价格层级头部）
+                            insert_after_order,
                         );
                     } else {
                         // 市价单：模拟插入市价单队列并撮合
@@ -342,18 +342,8 @@ impl MatchingEngine {
             }
         }
 
-        // 更新本地状态：移除已处理的请求
-        for request_id in &match_result.order_ids {
-            self.state.remove_request(request_id);
-            debug!("  Removed request {} from local state", request_id);
-        }
-
-        // 更新队列头部
-        if let Some(first_remaining) = self.state.get_head_requests(1).first() {
-            self.state.update_queue_head(first_remaining.request_id);
-        } else {
-            self.state.update_queue_head(U256::zero());
-        }
+        // 注意：请求的移除和 queue_head 的更新由 sync.rs 通过监听 RequestProcessed 事件完成
+        // 这样可以保证状态与链上一致
 
         Ok(())
     }
