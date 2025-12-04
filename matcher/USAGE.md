@@ -284,6 +284,124 @@ Calculates `insertAfterPrice` for correct linked list insertion:
 
 Simulates order removal to ensure subsequent insertions calculate correct positions.
 
+## REST API
+
+The matcher provides a REST API for querying orderbook state and market data. By default, the API server runs on `http://127.0.0.1:8080`.
+
+### API Configuration
+
+Add API settings to `config.toml`:
+
+```toml
+[api]
+host = "127.0.0.1"
+port = 8080
+```
+
+### Endpoints
+
+#### Health Check
+
+```
+GET /health
+```
+
+Returns service health status.
+
+#### Get Orders
+
+```
+GET /api/v1/orders/{trading_pair}
+```
+
+Query parameters:
+- `status`: Filter by order status (`open`, `partial`, `filled`, `cancelled`)
+- `side`: Filter by side (`ask`, `bid`)
+- `limit`: Maximum number of orders to return (default: 100)
+
+#### Get Trades
+
+```
+GET /api/v1/trades/{trading_pair}
+```
+
+Query parameters:
+- `start_time`: Start timestamp in milliseconds
+- `end_time`: End timestamp in milliseconds
+- `limit`: Maximum number of trades to return (default: 100)
+
+#### Get K-line (Candlestick) Data
+
+```
+GET /api/v1/klines/{trading_pair}
+```
+
+Query parameters:
+- `interval` (required): K-line interval
+  - `1m` - 1 minute
+  - `5m` - 5 minutes
+  - `15m` - 15 minutes
+  - `1h` - 1 hour
+  - `1d` - 1 day (24 hours)
+  - `1M` - 1 month
+  - `1y` - 1 year
+- `start_time`: Start timestamp in milliseconds (optional)
+- `end_time`: End timestamp in milliseconds (optional)
+- `limit`: Maximum number of K-lines to return (default: 100, max: 500)
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "open_time": 1704067200000,
+      "close_time": 1704067259999,
+      "open": "1000000000",
+      "high": "1050000000",
+      "low": "990000000",
+      "close": "1020000000",
+      "volume": "5000000000",
+      "quote_volume": "5100000000000000000",
+      "trade_count": 42
+    }
+  ]
+}
+```
+
+**Field descriptions:**
+- `open_time`: K-line opening timestamp (milliseconds)
+- `close_time`: K-line closing timestamp (milliseconds)
+- `open`: Opening price (first trade price in the interval)
+- `high`: Highest price during the interval
+- `low`: Lowest price during the interval
+- `close`: Closing price (last trade price in the interval)
+- `volume`: Total base asset volume traded
+- `quote_volume`: Total quote asset volume traded (price × amount)
+- `trade_count`: Number of trades in the interval
+
+**Example:**
+
+```bash
+# Get 1-hour K-lines for the past day
+curl "http://127.0.0.1:8080/api/v1/klines/0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816?interval=1h&limit=24"
+
+# Get 1-minute K-lines with time range
+curl "http://127.0.0.1:8080/api/v1/klines/0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816?interval=1m&start_time=1704067200000&end_time=1704153600000"
+```
+
+### K-line Data Generation
+
+K-line data is automatically generated in monitor mode when trades occur. The matcher:
+
+1. Listens for `Trade` events from the OrderBook contract
+2. Updates all supported timeframe K-lines (1m, 5m, 15m, 1h, 1d, 1M, 1y)
+3. Uses U256 arithmetic for precise calculations without floating-point errors
+4. Stores data in MongoDB for persistence
+
+K-lines are updated in real-time as trades execute, providing accurate OHLCV data for charting and analysis.
+
 ## Future Enhancements
 
 - [ ] Market order support
