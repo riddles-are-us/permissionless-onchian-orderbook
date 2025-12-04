@@ -1220,6 +1220,33 @@ impl StateSynchronizer {
                 state.add_request_to_tail(request);
             }
 
+            SequencerEvents::RequestProcessedFilter(processed) => {
+                info!(
+                    "✅ RequestProcessed: requestId={}, requestType={:?}",
+                    processed.request_id,
+                    processed.request_type
+                );
+
+                // 获取当前请求的 next_request_id，用于更新 queue_head
+                let next_request_id = state.queued_requests
+                    .get(&processed.request_id)
+                    .map(|r| r.next_request_id)
+                    .unwrap_or(U256::zero());
+
+                // 从队列中移除已处理的请求
+                state.remove_request(&processed.request_id);
+
+                // 如果被移除的是 queue_head，更新 queue_head 为下一个请求
+                let current_head = *state.queue_head.read();
+                if current_head == processed.request_id {
+                    state.update_queue_head(next_request_id);
+                    debug!(
+                        "  Updated queue_head from {} to {}",
+                        processed.request_id, next_request_id
+                    );
+                }
+            }
+
             // 忽略其他事件
             _ => {
                 debug!("Received unhandled Sequencer event");

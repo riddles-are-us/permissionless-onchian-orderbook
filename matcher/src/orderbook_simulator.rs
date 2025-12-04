@@ -113,13 +113,17 @@ impl OrderBookSimulator {
     /// 2. 调用 _findOrCreatePriceLevel（插入价格层级）
     /// 3. 调用 _insertOrderIntoPriceLevel（插入订单）
     /// 4. 调用 _tryMatchAfterInsertion（执行撮合）
+    /// 模拟插入限价订单
+    /// 返回 (insert_after_price, insert_after_order)
+    /// - insert_after_price: 价格层级插入位置
+    /// - insert_after_order: 该价格层级当前的 tailOrderId（用于 FIFO）
     pub fn simulate_insert_order(
         &mut self,
         order_id: U256,
         price: U256,
         amount: U256,
         is_ask: bool,
-    ) -> U256 {
+    ) -> (U256, U256) {
         // 1. 计算 insertAfterPrice（在当前状态下）
         let insert_after_price = self.find_insert_position(price, is_ask);
 
@@ -131,7 +135,20 @@ impl OrderBookSimulator {
         // 2. 查找或创建价格层级（对应链上 _findOrCreatePriceLevel）
         self.find_or_create_price_level(price, is_ask, insert_after_price);
 
-        // 3. 创建并插入订单（对应链上的订单创建和 _insertOrderIntoPriceLevel）
+        // 3. 获取当前价格层级的 tailOrderId（FIFO：新订单必须插入到尾部）
+        let level_key = Self::get_price_level_key(price, is_ask);
+        let insert_after_order = if let Some(level) = self.price_levels.get(&level_key) {
+            level.tail_order_id
+        } else {
+            EMPTY
+        };
+
+        debug!(
+            "Order {} (price={}, is_ask={}): insertAfterOrder={} (current tail)",
+            order_id, price, is_ask, insert_after_order
+        );
+
+        // 4. 创建并插入订单（对应链上的订单创建和 _insertOrderIntoPriceLevel）
         let order = SimOrder {
             id: order_id,
             amount,
@@ -144,13 +161,13 @@ impl OrderBookSimulator {
         };
         self.orders.insert(order_id, order);
 
-        // 插入订单到价格层级的尾部（简化版，链上支持 insertAfterOrder 参数）
-        self.insert_order_into_price_level(price, order_id, EMPTY, is_ask);
+        // 插入订单到价格层级的尾部（使用 tailOrderId 作为 insertAfterOrder）
+        self.insert_order_into_price_level(price, order_id, insert_after_order, is_ask);
 
-        // 4. 执行撮合（对应链上 _tryMatchAfterInsertion）
+        // 5. 执行撮合（对应链上 _tryMatchAfterInsertion）
         self.try_match_after_insertion();
 
-        insert_after_price
+        (insert_after_price, insert_after_order)
     }
 
     /// 模拟移除订单（对应链上 removeOrder）

@@ -649,6 +649,9 @@ contract OrderBook {
 
     /**
      * @dev 将订单插入到价格层级的订单列表中
+     * FIFO 强制：新订单必须插入到尾部
+     * - 如果价格层级为空，insertAfterOrder 必须为 0
+     * - 如果价格层级不为空，insertAfterOrder 必须等于 tailOrderId
      */
     function _insertOrderIntoPriceLevel(
         uint256 priceLevelId,
@@ -660,37 +663,21 @@ contract OrderBook {
         PriceLevel storage priceLevel = priceLevels[levelKey];
         Order storage order = orders[orderId];
 
-        if (insertAfterOrder == EMPTY) {
-            // 插入到头部
-            uint256 oldHead = priceLevel.headOrderId;
+        uint256 oldTail = priceLevel.tailOrderId;
 
-            if (oldHead != EMPTY) {
-                orders[oldHead].prevOrderId = orderId;
-                order.nextOrderId = oldHead;
-            } else {
-                // 列表为空
-                priceLevel.tailOrderId = orderId;
-            }
-
+        if (oldTail == EMPTY) {
+            // 价格层级为空，insertAfterOrder 必须为 0
+            require(insertAfterOrder == EMPTY, "FIFO: insertAfterOrder must be 0 for empty level");
+            // 新订单既是头也是尾
             priceLevel.headOrderId = orderId;
+            priceLevel.tailOrderId = orderId;
         } else {
-            // 插入到指定订单后面
-            Order storage prevOrder = orders[insertAfterOrder];
-            require(prevOrder.id != 0, "Previous order does not exist");
-            require(prevOrder.priceLevel == priceLevelId, "Previous order not in same price level");
-
-            uint256 nextOrderId = prevOrder.nextOrderId;
-
-            order.prevOrderId = insertAfterOrder;
-            order.nextOrderId = nextOrderId;
-            prevOrder.nextOrderId = orderId;
-
-            if (nextOrderId != EMPTY) {
-                orders[nextOrderId].prevOrderId = orderId;
-            } else {
-                // 插入到尾部
-                priceLevel.tailOrderId = orderId;
-            }
+            // 价格层级不为空，insertAfterOrder 必须等于 tailOrderId（强制 FIFO）
+            require(insertAfterOrder == oldTail, "FIFO: insertAfterOrder must equal tailOrderId");
+            // 插入到尾部
+            orders[oldTail].nextOrderId = orderId;
+            order.prevOrderId = oldTail;
+            priceLevel.tailOrderId = orderId;
         }
 
         // 更新价格层级的总挂单量
