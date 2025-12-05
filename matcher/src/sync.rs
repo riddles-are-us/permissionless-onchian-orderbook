@@ -471,19 +471,15 @@ impl StateSynchronizer {
                     // 查询订单来判断是否是市价买单
                     // 市价买单：filled_amount 对应 quote_amount
                     // 其他订单：filled_amount 对应 base_amount
-                    let filled_amount = match storage.get_order_by_id(&filled.order_id.to_string()).await {
-                        Ok(Some(order)) => {
-                            let is_market_bid = matches!(order.order_type, StoredOrderType::Market) && !order.is_ask;
-                            if is_market_bid {
-                                filled.quote_amount.to_string()
-                            } else {
-                                filled.base_amount.to_string()
-                            }
-                        }
-                        _ => {
-                            // 如果查不到订单信息，默认使用 base_amount
-                            filled.base_amount.to_string()
-                        }
+                    let order = storage.get_order_by_id(&filled.order_id.to_string()).await
+                        .expect("Failed to query order from MongoDB")
+                        .expect(&format!("Order {} must exist in DB before OrderFilled event", filled.order_id));
+
+                    let is_market_bid = matches!(order.order_type, StoredOrderType::Market) && !order.is_ask;
+                    let filled_amount = if is_market_bid {
+                        filled.quote_amount.to_string()
+                    } else {
+                        filled.base_amount.to_string()
                     };
 
                     if let Err(e) = storage.update_order_status(
@@ -1058,17 +1054,29 @@ impl StateSynchronizer {
                 // 根据订单类型决定 filled_amount 使用 quote 还是 base
                 // 市价买单：filled_amount 对应 quote_amount
                 // 其他订单：filled_amount 对应 base_amount
-                let is_market_bid = {
-                    let orderbook = state.orderbook.read();
-                    orderbook.orders.get(&filled.order_id)
-                        .map(|o| o.is_market_order && !o.is_ask)
-                        .unwrap_or(false)
-                };
+                // 注意：市价单不在 state.orderbook 中，必须从 MongoDB 查询
+                let filled_increment = if let Some(ref storage) = storage {
+                    let order = storage.get_order_by_id(&filled.order_id.to_string()).await
+                        .expect("Failed to query order from MongoDB")
+                        .expect(&format!("Order {} must exist in DB before OrderFilled event", filled.order_id));
 
-                let filled_increment = if is_market_bid {
-                    filled.quote_amount
+                    let is_market_bid = matches!(order.order_type, StoredOrderType::Market) && !order.is_ask;
+                    if is_market_bid {
+                        filled.quote_amount
+                    } else {
+                        filled.base_amount
+                    }
                 } else {
-                    filled.base_amount
+                    // 没有 MongoDB 时，从内存查询（仅限价单）
+                    let orderbook = state.orderbook.read();
+                    let is_market_bid = orderbook.orders.get(&filled.order_id)
+                        .map(|o| o.is_market_order && !o.is_ask)
+                        .unwrap_or(false);
+                    if is_market_bid {
+                        filled.quote_amount
+                    } else {
+                        filled.base_amount
+                    }
                 };
 
                 {
