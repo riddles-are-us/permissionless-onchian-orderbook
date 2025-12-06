@@ -284,6 +284,33 @@ pub struct StoredTrade {
     pub tx_hash: Option<String>,
 }
 
+/// Batch提交记录
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchSubmission {
+    /// Batch ID (matchId)
+    #[serde(rename = "_id")]
+    pub match_id: String,
+
+    /// 提交者地址
+    pub submitter: String,
+
+    /// 处理的请求数量
+    pub processed_count: u64,
+
+    /// 提交者获得的奖励 (80%的交易费用)
+    pub submitter_reward: String,
+
+    /// 提交时间
+    #[serde(with = "bson_datetime_as_iso8601")]
+    pub submitted_at: BsonDateTime,
+
+    /// 区块高度
+    pub block_number: u64,
+
+    /// 交易哈希
+    pub tx_hash: String,
+}
+
 /// MongoDB 存储服务
 #[derive(Clone)]
 pub struct MongoStorage {
@@ -383,6 +410,10 @@ impl MongoStorage {
         self.client.database(&self.database).collection("trades")
     }
 
+    fn batch_submissions_collection(&self) -> Collection<BatchSubmission> {
+        self.client.database(&self.database).collection("batch_submissions")
+    }
+
     fn klines_collection(&self) -> Collection<StoredKline> {
         self.client.database(&self.database).collection("klines")
     }
@@ -433,6 +464,13 @@ impl MongoStorage {
     pub async fn insert_trade(&self, trade: &StoredTrade) -> Result<()> {
         let collection = self.trades_collection();
         collection.insert_one(trade, None).await?;
+        Ok(())
+    }
+
+    /// 保存batch提交记录
+    pub async fn insert_batch_submission(&self, submission: &BatchSubmission) -> Result<()> {
+        let collection = self.batch_submissions_collection();
+        collection.insert_one(submission, None).await?;
         Ok(())
     }
 

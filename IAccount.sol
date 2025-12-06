@@ -40,4 +40,10 @@ interface IAccount {
         uint256 price,
         uint256 amount
     ) external view returns (bool);
+
+    function getTradingPair(bytes32 tradingPair) external view returns (address baseToken, address quoteToken, bool exists);
+
+    function startBatch(address submitter) external;
+
+    function endBatch(address quoteToken) external returns (uint256 submitterReward);
 }
