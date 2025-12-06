@@ -467,12 +467,7 @@ impl StateSynchronizer {
                         tx_hash: None,
                     };
 
-                    if let Err(e) = storage.insert_trade(&stored_trade).await {
-                        // Ignore duplicate key errors (trade already exists)
-                        if !e.to_string().contains("duplicate key") {
-                            warn!("Failed to save historical trade to MongoDB: {}", e);
-                        }
-                    }
+                    storage.insert_trade(&stored_trade).await?;
 
                     // 更新K线数据 - 直接使用 U256 进行精确计算
                     if let Err(e) = storage.update_klines(
@@ -536,12 +531,7 @@ impl StateSynchronizer {
                         tx_hash: format!("{:?}", tx_hash),
                     };
 
-                    if let Err(e) = storage.insert_batch_submission(&submission).await {
-                        // Ignore duplicate key errors
-                        if !e.to_string().contains("duplicate key") {
-                            warn!("Failed to save historical batch submission: {}", e);
-                        }
-                    }
+                    storage.insert_batch_submission(&submission).await?;
                 }
             }
         }
@@ -777,7 +767,7 @@ impl StateSynchronizer {
                 if log.address == orderbook_addr {
                     if let Ok(event) = OrderBookEvents::decode_log(&raw_log) {
                         let block_num = log.block_number.map(|b| b.as_u64()).unwrap_or(0);
-                        Self::handle_orderbook_event(event, &self.state, &self.storage, block_num, tx_hash).await;
+                        Self::handle_orderbook_event(event, &self.state, &self.storage, block_num, tx_hash).await?;
                     } else {
                         debug!("Failed to parse OrderBook log: {:?}", log);
                     }
@@ -807,7 +797,7 @@ impl StateSynchronizer {
         storage: &Option<MongoStorage>,
         block_number: u64,
         tx_hash: H256,
-    ) {
+    ) -> Result<()> {
         use crate::contracts::order_book::OrderBookEvents;
 
         match event {
@@ -1253,17 +1243,11 @@ impl StateSynchronizer {
                         tx_hash: format!("{:?}", tx_hash),
                     };
 
-                    if let Err(e) = storage.insert_batch_submission(&submission).await {
-                        // Ignore duplicate key errors
-                        if !e.to_string().contains("duplicate key") {
-                            warn!("Failed to save batch submission: {}", e);
-                        }
-                    } else {
-                        info!(
-                            "💾 BatchSubmission saved: matchId={}, submitter={:?}, reward={}",
-                            batch.match_id, batch.submitter, batch.total_fees
-                        );
-                    }
+                    storage.insert_batch_submission(&submission).await?;
+                    info!(
+                        "💾 BatchSubmission saved: matchId={}, submitter={:?}, reward={}",
+                        batch.match_id, batch.submitter, batch.total_fees
+                    );
                 }
             }
 
@@ -1272,6 +1256,7 @@ impl StateSynchronizer {
                 debug!("Received unhandled OrderBook event");
             }
         }
+        Ok(())
     }
 
     /// 处理单个 Sequencer 事件
