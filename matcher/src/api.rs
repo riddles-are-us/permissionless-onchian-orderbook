@@ -1,6 +1,6 @@
 use crate::config::ApiConfig;
 use crate::state::GlobalState;
-use crate::storage::{KlineInterval, MongoStorage, OrderStatus, StoredKline, StoredOrder};
+use crate::storage::{BatchSubmission, KlineInterval, MongoStorage, OrderStatus, StoredKline, StoredOrder};
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use ethers::types::U256;
@@ -57,6 +57,13 @@ pub struct TradeQuery {
 #[derive(Deserialize)]
 pub struct OrderbookQuery {
     pub depth: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct BatchSubmissionQuery {
+    pub submitter: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<u64>,
 }
 
 /// K线查询参数
@@ -498,6 +505,20 @@ async fn get_debug_orderbook(state: web::Data<Arc<ApiState>>) -> impl Responder 
     HttpResponse::Ok().json(ApiResponse::success(response))
 }
 
+/// 获取批量提交记录
+async fn get_batch_submissions(
+    state: web::Data<Arc<ApiState>>,
+    query: web::Query<BatchSubmissionQuery>,
+) -> impl Responder {
+    let limit = query.limit.unwrap_or(50).min(100);
+    let offset = query.offset.unwrap_or(0);
+
+    match state.storage.get_batch_submissions(query.submitter.as_deref(), limit, offset).await {
+        Ok(submissions) => HttpResponse::Ok().json(ApiResponse::success(submissions)),
+        Err(e) => HttpResponse::InternalServerError().json(ApiResponse::<()>::error(&e.to_string())),
+    }
+}
+
 /// 启动 API 服务器
 pub async fn start_api_server(config: ApiConfig, storage: MongoStorage, global_state: Option<GlobalState>) -> std::io::Result<()> {
     let state = Arc::new(ApiState { storage, global_state });
@@ -530,6 +551,8 @@ pub async fn start_api_server(config: ApiConfig, storage: MongoStorage, global_s
             .route("/api/v1/klines/{trading_pair}", web::get().to(get_klines))
             // 系统概述
             .route("/api/v1/overview", web::get().to(get_system_overview))
+            // 批量提交记录
+            .route("/api/v1/batch-submissions", web::get().to(get_batch_submissions))
             // 调试接口
             .route("/api/v1/debug/orderbook", web::get().to(get_debug_orderbook))
     })

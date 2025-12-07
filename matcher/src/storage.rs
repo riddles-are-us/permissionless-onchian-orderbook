@@ -474,6 +474,36 @@ impl MongoStorage {
         Ok(())
     }
 
+    /// 查询batch提交记录
+    pub async fn get_batch_submissions(
+        &self,
+        submitter: Option<&str>,
+        limit: i64,
+        offset: u64,
+    ) -> Result<Vec<BatchSubmission>> {
+        let collection = self.batch_submissions_collection();
+
+        let filter = match submitter {
+            Some(s) => doc! { "submitter": s.to_lowercase() },
+            None => doc! {},
+        };
+
+        let options = mongodb::options::FindOptions::builder()
+            .sort(doc! { "submitted_at": -1 })
+            .skip(offset)
+            .limit(limit)
+            .build();
+
+        let mut cursor = collection.find(filter, options).await?;
+        let mut submissions = Vec::new();
+
+        while cursor.advance().await? {
+            submissions.push(cursor.deserialize_current()?);
+        }
+
+        Ok(submissions)
+    }
+
     /// 根据交易者地址查询订单
     pub async fn get_orders_by_trader(
         &self,
