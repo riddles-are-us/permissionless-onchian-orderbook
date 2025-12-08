@@ -84,7 +84,7 @@ contract OrderBook {
         uint256 amount
     );
     event OrderFilled(bytes32 indexed tradingPair, uint256 indexed orderId, uint256 quoteAmount, uint256 baseAmount, bool isFullyFilled);
-    event MatchIdChanged(uint256 indexed newMatchId);
+    event BatchProcessed(address indexed submitter, uint256 indexed matchId, uint256 processedCount, uint256 totalFees);
 
     /**
      * @notice 设置Sequencer合约地址
@@ -305,6 +305,23 @@ contract OrderBook {
             "Array length mismatch"
         );
 
+        // 从第一个请求获取tradingPair和quoteToken
+        (
+            ,
+            bytes32 tradingPair,
+            ,  // trader
+            ,  // orderType
+            ,  // isAsk
+            ,  // price
+            // amount
+        ) = sequencer.getQueuedRequest(requestIds[0]);
+
+        (, address quoteToken, bool exists) = account.getTradingPair(tradingPair);
+        require(exists, "Trading pair not registered");
+
+        // 开始batch，记录提交者
+        account.startBatch(msg.sender);
+
         processedCount = 0;
 
         for (uint256 i = 0; i < requestIds.length; i++) {
@@ -340,10 +357,13 @@ contract OrderBook {
             processedCount++;
         }
 
+        // 结束batch，分配费用
+        uint256 submitterReward = account.endBatch(quoteToken);
+
         // 处理完成后递增matchId
         if (processedCount > 0) {
             matchId++;
-            emit MatchIdChanged(matchId);
+            emit BatchProcessed(msg.sender, matchId, processedCount, submitterReward);
         }
 
         return processedCount;
@@ -976,22 +996,6 @@ contract OrderBook {
     }
 
     /**
-     * @notice 撮合订单（外部调用接口，保留用于手动触发）
-     * @dev 撮合bid和ask订单，确保撮合后bid最高价 < ask最低价
-     * @param tradingPair 交易对标识符
-     * @param maxIterations 最大撮合次数（防止gas耗尽）
-     * @return totalTrades 成交的交易数量
-     */
-    function matchOrders(bytes32 tradingPair, uint256 maxIterations) external returns (uint256 totalTrades) {
-        totalTrades = _matchOrdersInternal(tradingPair, maxIterations);
-        if (totalTrades > 0) {
-            matchId++;
-            emit MatchIdChanged(matchId);
-        }
-        return totalTrades;
-    }
-
-    /**
      * @dev 内部撮合逻辑
      * @param tradingPair 交易对标识符
      * @param maxIterations 最大撮合次数
@@ -1202,22 +1206,6 @@ contract OrderBook {
     }
 
     /**
-     * @notice 撮合市价单（外部调用接口，保留用于手动触发）
-     * @dev 市价买单与最优卖价撮合，市价卖单与最优买价撮合
-     * @param tradingPair 交易对标识符
-     * @param maxIterations 最大撮合次数
-     * @return totalTrades 成交的交易数量
-     */
-    function matchMarketOrders(bytes32 tradingPair, uint256 maxIterations) external returns (uint256 totalTrades) {
-        totalTrades = _matchMarketOrdersInternal(tradingPair, maxIterations);
-        if (totalTrades > 0) {
-            matchId++;
-            emit MatchIdChanged(matchId);
-        }
-        return totalTrades;
-    }
-
-    /**
      * @dev 内部市价单撮合逻辑
      * @param tradingPair 交易对标识符
      * @param maxIterations 最大撮合次数
@@ -1292,16 +1280,27 @@ contract OrderBook {
      * @return marketTrades 市价单成交数量
      */
     function matchAll(bytes32 tradingPair, uint256 maxIterations) external returns (uint256 limitTrades, uint256 marketTrades) {
+        // 获取quoteToken用于费用分配
+        (, address quoteToken, bool exists) = account.getTradingPair(tradingPair);
+        require(exists, "Trading pair not registered");
+
+        // 开始batch，记录提交者
+        account.startBatch(msg.sender);
+
         // 先撮合限价单
         limitTrades = _matchOrdersInternal(tradingPair, maxIterations);
 
         // 再撮合市价单
         marketTrades = _matchMarketOrdersInternal(tradingPair, maxIterations);
 
+        // 结束batch，分配费用
+        uint256 submitterReward = account.endBatch(quoteToken);
+
         // 只有在有成交时才更新 matchId
-        if (limitTrades > 0 || marketTrades > 0) {
+        uint256 totalTrades = limitTrades + marketTrades;
+        if (totalTrades > 0) {
             matchId++;
-            emit MatchIdChanged(matchId);
+            emit BatchProcessed(msg.sender, matchId, totalTrades, submitterReward);
         }
 
         return (limitTrades, marketTrades);

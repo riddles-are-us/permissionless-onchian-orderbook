@@ -167,8 +167,9 @@ contract GasTest is Test {
         // 测试撮合 - 手动触发撮合
         vm.prank(matcher);
         uint256 gasBefore = gasleft();
-        uint256 matchCount = orderbook.matchOrders(pairId, 10);
+        (uint256 limitTrades, uint256 marketTrades) = orderbook.matchAll(pairId, 10);
         uint256 gasUsed = gasBefore - gasleft();
+        uint256 matchCount = limitTrades + marketTrades;
 
         console.log("Matching trades:", matchCount);
         console.log("  Total gas:", gasUsed);

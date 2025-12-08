@@ -44,8 +44,19 @@ contract Account {
     // 费用收集地址
     address public feeCollector;
 
-    // 已收取的费用（token => amount）
+    // 已收取的费用（token => amount）- 协议费用（20%）
     mapping(address => uint256) public collectedFees;
+
+    // 提交者奖励（submitter => token => amount）- 80%的交易费用
+    mapping(address => mapping(address => uint256)) public submitterRewards;
+
+    // 当前batch上下文
+    address public currentBatchSubmitter;
+    mapping(address => uint256) public batchFees;  // 当前batch累积的费用（token => amount）
+
+    // 提交者奖励比例（80%）
+    uint256 public constant SUBMITTER_SHARE = 80;
+    uint256 public constant PROTOCOL_SHARE = 20;
 
     // 事件
     event TradingPairRegistered(bytes32 indexed tradingPair, address indexed baseToken, address indexed quoteToken);
@@ -53,12 +64,11 @@ contract Account {
     event Withdraw(address indexed user, address indexed token, uint256 amount);
     event FundsLocked(address indexed user, address indexed token, uint256 amount, uint256 orderId);
     event FundsUnlocked(address indexed user, address indexed token, uint256 amount, uint256 orderId);
-    event FundsTransferred(address indexed from, address indexed to, address indexed token, uint256 amount);
     event SequencerSet(address indexed sequencer);
     event OrderBookSet(address indexed orderBook);
     event FeeCollectorSet(address indexed feeCollector);
-    event FeeCollected(address indexed token, uint256 amount, address indexed payer);
     event FeeWithdrawn(address indexed token, uint256 amount, address indexed recipient);
+    event SubmitterRewardWithdrawn(address indexed submitter, address indexed token, uint256 amount);
 
     // 修饰器
     modifier onlySequencer() {
@@ -363,15 +373,12 @@ contract Account {
 
         // 收取费用
         uint256 totalFee = actualBuyerFee + actualSellerFee;
-        collectedFees[pair.quoteToken] += totalFee;
 
-        emit FundsTransferred(buyer, seller, pair.baseToken, amount);
-        emit FundsTransferred(buyer, seller, pair.quoteToken, sellerReceives);
-        if (actualBuyerFee > 0) {
-            emit FeeCollected(pair.quoteToken, actualBuyerFee, buyer);
-        }
-        if (actualSellerFee > 0) {
-            emit FeeCollected(pair.quoteToken, actualSellerFee, seller);
+        // 如果在batch中，累积费用；否则全部归协议
+        if (currentBatchSubmitter != address(0)) {
+            batchFees[pair.quoteToken] += totalFee;
+        } else {
+            collectedFees[pair.quoteToken] += totalFee;
         }
     }
 
@@ -478,5 +485,63 @@ contract Account {
      */
     function getCollectedFees(address token) external view returns (uint256) {
         return collectedFees[token];
+    }
+
+    /**
+     * @notice 开始batch处理（只能由OrderBook调用）
+     * @param submitter 提交者地址
+     */
+    function startBatch(address submitter) external onlyOrderBook {
+        currentBatchSubmitter = submitter;
+    }
+
+    /**
+     * @notice 结束batch处理，分配费用（只能由OrderBook调用）
+     * @param quoteToken 计价代币地址
+     * @return submitterReward 提交者获得的奖励
+     */
+    function endBatch(address quoteToken) external onlyOrderBook returns (uint256 submitterReward) {
+        uint256 totalFee = batchFees[quoteToken];
+        if (totalFee > 0) {
+            // 80%给提交者，20%给协议
+            submitterReward = (totalFee * SUBMITTER_SHARE) / 100;
+            uint256 protocolFee = totalFee - submitterReward;
+
+            submitterRewards[currentBatchSubmitter][quoteToken] += submitterReward;
+            collectedFees[quoteToken] += protocolFee;
+
+            // 清零batch费用
+            batchFees[quoteToken] = 0;
+        }
+
+        currentBatchSubmitter = address(0);
+        return submitterReward;
+    }
+
+    /**
+     * @notice 提交者提取奖励
+     * @param token 代币地址
+     * @param amount 提取数量
+     */
+    function withdrawSubmitterReward(address token, uint256 amount) external {
+        require(amount > 0, "Amount must be greater than 0");
+        require(submitterRewards[msg.sender][token] >= amount, "Insufficient reward balance");
+
+        submitterRewards[msg.sender][token] -= amount;
+
+        // 转账给提交者
+        IERC20(token).transfer(msg.sender, amount);
+
+        emit SubmitterRewardWithdrawn(msg.sender, token, amount);
+    }
+
+    /**
+     * @notice 获取提交者的奖励余额
+     * @param submitter 提交者地址
+     * @param token 代币地址
+     * @return 奖励余额
+     */
+    function getSubmitterReward(address submitter, address token) external view returns (uint256) {
+        return submitterRewards[submitter][token];
     }
 }

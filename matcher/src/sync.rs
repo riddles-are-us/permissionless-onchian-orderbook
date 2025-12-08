@@ -4,7 +4,7 @@ use crate::contracts::order_book::OrderBookEvents;
 use crate::contracts::sequencer::SequencerEvents;
 use crate::orderbook_simulator::{SimOrder, SimPriceLevel};
 use crate::state::GlobalState;
-use crate::storage::{MongoStorage, OrderStatus, StoredOrder, StoredOrderType, StoredTrade};
+use crate::storage::{MongoStorage, OrderStatus, StoredOrder, StoredOrderType, StoredTrade, BatchSubmission};
 use crate::types::*;
 use anyhow::{Context, Result};
 use ethers::prelude::*;
@@ -12,6 +12,7 @@ use ethers::abi::RawLog;
 use mongodb::bson::DateTime as BsonDateTime;
 use futures::stream::StreamExt;
 use std::sync::Arc;
+use std::collections::HashSet;
 use tracing::{debug, info, warn};
 
 pub struct StateSynchronizer {
@@ -120,6 +121,8 @@ impl StateSynchronizer {
     }
 
     /// 最小化同步：只同步 matchId 和当前区块高度
+    /// 注意：当 sync_historical = false 时，WebSocket 订阅从当前区块 + 1 开始
+    /// 这意味着历史事件不会被同步到 MongoDB，只有新的事件会被处理
     async fn sync_minimal_state(&mut self) -> Result<()> {
         let current_block = self.provider.get_block_number().await?.as_u64();
         info!("📚 Minimal sync: getting current matchId at block {}", current_block);
@@ -131,13 +134,13 @@ impl StateSynchronizer {
         // TODO: 临时注释掉，改用 event sync 来重建订单簿状态以验证 event sync 逻辑
         // self.sync_orderbook_state().await?;
 
-        // 更新同步区块
-        // TODO: 临时不更新 synced_block，保持 start_block，让 watch_events 从合约部署区块开始同步
-        // self.synced_block = current_block;
+        // 更新 synced_block 为当前区块，watch_events 会从 current_block + 1 开始监听
+        // 在 minimal sync 模式下，不处理历史事件
+        self.synced_block = current_block;
         self.state.update_current_block(current_block);
 
         info!("✅ Minimal sync completed at block {}", current_block);
-        info!("   Event sync will start from block {} (deployment block)", self.synced_block);
+        info!("   WebSocket subscription will start from block {}", self.synced_block + 1);
 
         // 标记同步完成，允许 MatchingEngine 开始处理
         self.state.mark_sync_completed();
@@ -169,12 +172,13 @@ impl StateSynchronizer {
         }
 
         // 记录同步的区块高度，后续 event 监听从这个区块开始
-        // TODO: 临时不更新 synced_block，保持 start_block，让 watch_events 从合约部署区块开始同步
-        // self.synced_block = current_block;
+        // 更新 synced_block 为当前区块，这样 watch_events 会从 current_block + 1 开始监听
+        // 避免历史同步过的事件被 WebSocket 重复处理
+        self.synced_block = current_block;
         self.state.update_current_block(current_block);
 
         info!("✅ Historical state synced at block {}", current_block);
-        info!("   Event sync will start from block {} (deployment block)", self.synced_block);
+        info!("   WebSocket subscription will start from block {}", self.synced_block + 1);
 
         // 标记历史同步完成，允许 MatchingEngine 开始处理
         self.state.mark_sync_completed();
@@ -297,6 +301,7 @@ impl StateSynchronizer {
             Trade(crate::contracts::order_book::TradeFilter, u64, u64),
             OrderFilled(crate::contracts::order_book::OrderFilledFilter, u64, u64),
             OrderRemoved(crate::contracts::order_book::OrderRemovedFilter, u64, u64),
+            BatchProcessed(crate::contracts::order_book::BatchProcessedFilter, u64, u64, H256), // event, block, log_index, tx_hash
         }
 
         let mut all_events: Vec<HistoricalEvent> = Vec::new();
@@ -365,6 +370,23 @@ impl StateSynchronizer {
             all_events.push(HistoricalEvent::OrderRemoved(event, block_number, log_index));
         }
 
+        // 获取 BatchProcessed 事件（带元数据）
+        let batch_processed_events = self.orderbook
+            .batch_processed_filter()
+            .from_block(from_block)
+            .to_block(to_block)
+            .query_with_meta()
+            .await?;
+
+        info!("  Found {} BatchProcessed events", batch_processed_events.len());
+
+        for (event, meta) in batch_processed_events {
+            let block_number = meta.block_number.as_u64();
+            let log_index = meta.log_index.as_u64();
+            let tx_hash = meta.transaction_hash;
+            all_events.push(HistoricalEvent::BatchProcessed(event, block_number, log_index, tx_hash));
+        }
+
         // 按照 (block_number, log_index) 排序，确保按 emit 时间顺序处理
         all_events.sort_by(|a, b| {
             let (block_a, log_a) = match a {
@@ -372,12 +394,14 @@ impl StateSynchronizer {
                 HistoricalEvent::Trade(_, block, log) => (*block, *log),
                 HistoricalEvent::OrderFilled(_, block, log) => (*block, *log),
                 HistoricalEvent::OrderRemoved(_, block, log) => (*block, *log),
+                HistoricalEvent::BatchProcessed(_, block, log, _) => (*block, *log),
             };
             let (block_b, log_b) = match b {
                 HistoricalEvent::PlaceOrder(_, block, log) => (*block, *log),
                 HistoricalEvent::Trade(_, block, log) => (*block, *log),
                 HistoricalEvent::OrderFilled(_, block, log) => (*block, *log),
                 HistoricalEvent::OrderRemoved(_, block, log) => (*block, *log),
+                HistoricalEvent::BatchProcessed(_, block, log, _) => (*block, *log),
             };
             (block_a, log_a).cmp(&(block_b, log_b))
         });
@@ -443,12 +467,7 @@ impl StateSynchronizer {
                         tx_hash: None,
                     };
 
-                    if let Err(e) = storage.insert_trade(&stored_trade).await {
-                        // Ignore duplicate key errors (trade already exists)
-                        if !e.to_string().contains("duplicate key") {
-                            warn!("Failed to save historical trade to MongoDB: {}", e);
-                        }
-                    }
+                    storage.insert_trade(&stored_trade).await?;
 
                     // 更新K线数据 - 直接使用 U256 进行精确计算
                     if let Err(e) = storage.update_klines(
@@ -471,19 +490,15 @@ impl StateSynchronizer {
                     // 查询订单来判断是否是市价买单
                     // 市价买单：filled_amount 对应 quote_amount
                     // 其他订单：filled_amount 对应 base_amount
-                    let filled_amount = match storage.get_order_by_id(&filled.order_id.to_string()).await {
-                        Ok(Some(order)) => {
-                            let is_market_bid = matches!(order.order_type, StoredOrderType::Market) && !order.is_ask;
-                            if is_market_bid {
-                                filled.quote_amount.to_string()
-                            } else {
-                                filled.base_amount.to_string()
-                            }
-                        }
-                        _ => {
-                            // 如果查不到订单信息，默认使用 base_amount
-                            filled.base_amount.to_string()
-                        }
+                    let order = storage.get_order_by_id(&filled.order_id.to_string()).await
+                        .expect("Failed to query order from MongoDB")
+                        .expect(&format!("Order {} must exist in DB before OrderFilled event", filled.order_id));
+
+                    let is_market_bid = matches!(order.order_type, StoredOrderType::Market) && !order.is_ask;
+                    let filled_amount = if is_market_bid {
+                        filled.quote_amount.to_string()
+                    } else {
+                        filled.base_amount.to_string()
                     };
 
                     if let Err(e) = storage.update_order_status(
@@ -503,6 +518,20 @@ impl StateSynchronizer {
                     ).await {
                         warn!("Failed to update historical order status to cancelled: {}", e);
                     }
+                }
+
+                HistoricalEvent::BatchProcessed(batch, block_number, _, tx_hash) => {
+                    let submission = BatchSubmission {
+                        match_id: batch.match_id.to_string(),
+                        submitter: format!("{:?}", batch.submitter).to_lowercase(),
+                        processed_count: batch.processed_count.as_u64(),
+                        submitter_reward: batch.total_fees.to_string(),
+                        submitted_at: BsonDateTime::now(),
+                        block_number,
+                        tx_hash: format!("{:?}", tx_hash),
+                    };
+
+                    storage.insert_batch_submission(&submission).await?;
                 }
             }
         }
@@ -666,6 +695,11 @@ impl StateSynchronizer {
         const MAX_RETRY_DELAY: u64 = 30;
         let mut last_processed_block = self.synced_block;
 
+        // 事件去重：使用 (tx_hash, log_index) 作为唯一标识
+        // 保留最近处理过的事件ID，防止 WebSocket 重复推送
+        let mut processed_events: HashSet<(H256, U256)> = HashSet::new();
+        let mut last_cleanup_block = last_processed_block;
+
         loop {
             // 使用 last_processed_block + 1 避免重复处理已同步的状态
             let event_start_block = last_processed_block + 1;
@@ -699,10 +733,28 @@ impl StateSynchronizer {
 
             // 处理订阅的日志
             while let Some(log) = subscription.next().await {
+                // 事件去重检查
+                let tx_hash = log.transaction_hash.unwrap_or_default();
+                let log_index = log.log_index.unwrap_or_default();
+                let event_id = (tx_hash, log_index);
+
+                if processed_events.contains(&event_id) {
+                    debug!("Skipping duplicate event: tx={:?}, log_index={}", tx_hash, log_index);
+                    continue;
+                }
+                processed_events.insert(event_id);
+
                 // 更新已处理的区块号
                 if let Some(block_num) = log.block_number {
                     if block_num.as_u64() > last_processed_block {
                         last_processed_block = block_num.as_u64();
+                    }
+
+                    // 每100个区块清理一次已处理事件集合，防止内存泄漏
+                    if block_num.as_u64() > last_cleanup_block + 100 {
+                        processed_events.clear();
+                        last_cleanup_block = block_num.as_u64();
+                        debug!("Cleared processed events cache at block {}", block_num);
                     }
                 }
 
@@ -714,7 +766,8 @@ impl StateSynchronizer {
                 // 根据日志来源地址解析事件
                 if log.address == orderbook_addr {
                     if let Ok(event) = OrderBookEvents::decode_log(&raw_log) {
-                        Self::handle_orderbook_event(event, &self.state, &self.storage).await;
+                        let block_num = log.block_number.map(|b| b.as_u64()).unwrap_or(0);
+                        Self::handle_orderbook_event(event, &self.state, &self.storage, block_num, tx_hash).await?;
                     } else {
                         debug!("Failed to parse OrderBook log: {:?}", log);
                     }
@@ -742,7 +795,9 @@ impl StateSynchronizer {
         event: crate::contracts::order_book::OrderBookEvents,
         state: &GlobalState,
         storage: &Option<MongoStorage>,
-    ) {
+        block_number: u64,
+        tx_hash: H256,
+    ) -> Result<()> {
         use crate::contracts::order_book::OrderBookEvents;
 
         match event {
@@ -1058,17 +1113,29 @@ impl StateSynchronizer {
                 // 根据订单类型决定 filled_amount 使用 quote 还是 base
                 // 市价买单：filled_amount 对应 quote_amount
                 // 其他订单：filled_amount 对应 base_amount
-                let is_market_bid = {
-                    let orderbook = state.orderbook.read();
-                    orderbook.orders.get(&filled.order_id)
-                        .map(|o| o.is_market_order && !o.is_ask)
-                        .unwrap_or(false)
-                };
+                // 注意：市价单不在 state.orderbook 中，必须从 MongoDB 查询
+                let filled_increment = if let Some(ref storage) = storage {
+                    let order = storage.get_order_by_id(&filled.order_id.to_string()).await
+                        .expect("Failed to query order from MongoDB")
+                        .expect(&format!("Order {} must exist in DB before OrderFilled event", filled.order_id));
 
-                let filled_increment = if is_market_bid {
-                    filled.quote_amount
+                    let is_market_bid = matches!(order.order_type, StoredOrderType::Market) && !order.is_ask;
+                    if is_market_bid {
+                        filled.quote_amount
+                    } else {
+                        filled.base_amount
+                    }
                 } else {
-                    filled.base_amount
+                    // 没有 MongoDB 时，从内存查询（仅限价单）
+                    let orderbook = state.orderbook.read();
+                    let is_market_bid = orderbook.orders.get(&filled.order_id)
+                        .map(|o| o.is_market_order && !o.is_ask)
+                        .unwrap_or(false);
+                    if is_market_bid {
+                        filled.quote_amount
+                    } else {
+                        filled.base_amount
+                    }
                 };
 
                 {
@@ -1153,9 +1220,35 @@ impl StateSynchronizer {
                 }
             }
 
-            OrderBookEvents::MatchIdChangedFilter(changed) => {
-                info!("🔄 MatchIdChanged: newMatchId={}", changed.new_match_id);
-                state.update_match_id(changed.new_match_id);
+            OrderBookEvents::BatchProcessedFilter(batch) => {
+                info!(
+                    "📦 BatchProcessed: submitter={:?}, matchId={}, processedCount={}, totalFees={}",
+                    batch.submitter,
+                    batch.match_id,
+                    batch.processed_count,
+                    batch.total_fees
+                );
+
+                // Update matchId in state
+                state.update_match_id(batch.match_id);
+
+                if let Some(ref storage) = storage {
+                    let submission = BatchSubmission {
+                        match_id: batch.match_id.to_string(),
+                        submitter: format!("{:?}", batch.submitter).to_lowercase(),
+                        processed_count: batch.processed_count.as_u64(),
+                        submitter_reward: batch.total_fees.to_string(),
+                        submitted_at: BsonDateTime::now(),
+                        block_number,
+                        tx_hash: format!("{:?}", tx_hash),
+                    };
+
+                    storage.insert_batch_submission(&submission).await?;
+                    info!(
+                        "💾 BatchSubmission saved: matchId={}, submitter={:?}, reward={}",
+                        batch.match_id, batch.submitter, batch.total_fees
+                    );
+                }
             }
 
             // 忽略其他事件
@@ -1163,6 +1256,7 @@ impl StateSynchronizer {
                 debug!("Received unhandled OrderBook event");
             }
         }
+        Ok(())
     }
 
     /// 处理单个 Sequencer 事件
