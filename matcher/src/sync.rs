@@ -210,7 +210,9 @@ impl StateSynchronizer {
             // 调用合约获取请求信息
             let request_data = self.sequencer.queued_requests(current_id).call().await?;
 
-            let next_id = request_data.7;
+            // 合约结构: tradingPair(0), trader(1), requestType(2), orderType(3), isAsk(4),
+            //          price(5), amount(6), uncancellableDuration(7), nextRequestId(8), prevRequestId(9)
+            let next_id = request_data.8;
 
             let request_type_u8: u8 = request_data.2;
             let order_type_u8: u8 = request_data.3;
@@ -235,6 +237,7 @@ impl StateSynchronizer {
                 is_ask: request_data.4,
                 price: request_data.5,
                 amount: request_data.6,
+                uncancellable_duration: request_data.7,
                 order_id_to_remove: if request_type_u8 == 1 { request_data.5 } else { U256::zero() },
                 next_request_id: next_id,
             };
@@ -1271,11 +1274,12 @@ impl StateSynchronizer {
         match event {
             SequencerEvents::PlaceOrderRequestedFilter(place_order) => {
                 info!(
-                    "📥 PlaceOrderRequested: requestId={}, price={}, amount={}, isAsk={}",
+                    "📥 PlaceOrderRequested: requestId={}, price={}, amount={}, isAsk={}, uncancellableDuration={}",
                     place_order.request_id,
                     place_order.price,
                     place_order.amount,
-                    place_order.is_ask
+                    place_order.is_ask,
+                    place_order.uncancellable_duration
                 );
 
                 let order_type = match place_order.order_type {
@@ -1293,6 +1297,7 @@ impl StateSynchronizer {
                     is_ask: place_order.is_ask,
                     price: place_order.price,
                     amount: place_order.amount,
+                    uncancellable_duration: place_order.uncancellable_duration,
                     order_id_to_remove: U256::zero(),
                     next_request_id: U256::zero(),
                 };
@@ -1342,6 +1347,7 @@ impl StateSynchronizer {
                     is_ask: false,
                     price: U256::zero(),
                     amount: U256::zero(),
+                    uncancellable_duration: U256::zero(),  // 撤单请求不需要此字段
                     order_id_to_remove: remove_order.order_id_to_remove,
                     next_request_id: U256::zero(),
                 };

@@ -87,7 +87,8 @@ contract AutoMatchingTest is Test {
             pairId,
             true,  // Ask
             2000 * 10**8,  // 2000 USDC (price with decimals)
-            1 * 10**8  // 1 WETH
+            1 * 10**8,  // 1 WETH
+            0  // uncancellableDuration
         );
 
         console.log("Alice placed sell order:", sellOrderId, "Request:", sellRequestId);
@@ -105,7 +106,7 @@ contract AutoMatchingTest is Test {
         console.log("  Inserted into orderbook");
 
         // 验证订单存在
-        (uint256 orderId, , uint256 amount, uint256 filledAmount, , , , ) = orderbook.orders(sellOrderId);
+        (uint256 orderId, , uint256 amount, uint256 filledAmount, , , , , , ) = orderbook.orders(sellOrderId);
         assertEq(orderId, sellOrderId, "Sell order should exist");
         assertEq(filledAmount, 0, "Sell order should not be filled yet");
         console.log("  Verified: Order exists, not filled");
@@ -116,7 +117,8 @@ contract AutoMatchingTest is Test {
             pairId,
             false,  // Bid
             2000 * 10**8,  // 2000 USDC (price with decimals)
-            1 * 10**8  // 1 WETH
+            1 * 10**8,  // 1 WETH
+            0  // uncancellableDuration
         );
 
         console.log("\nBob placed buy order:", buyOrderId, "Request:", buyRequestId);
@@ -167,8 +169,8 @@ contract AutoMatchingTest is Test {
         assertTrue(sellOrderFilledFound, "Sell order filled event should be emitted");
 
         // 验证订单已完全成交并被移除
-        (uint256 buyId, , , uint256 buyFilled, , , , ) = orderbook.orders(buyOrderId);
-        (uint256 sellId, , , uint256 sellFilled, , , , ) = orderbook.orders(sellOrderId);
+        (uint256 buyId, , , uint256 buyFilled, , , , , , ) = orderbook.orders(buyOrderId);
+        (uint256 sellId, , , uint256 sellFilled, , , , , , ) = orderbook.orders(sellOrderId);
 
         assertEq(buyId, 0, "Buy order should be removed (fully filled)");
         assertEq(sellId, 0, "Sell order should be removed (fully filled)");
@@ -186,16 +188,16 @@ contract AutoMatchingTest is Test {
         // 准备订单
         // Alice: 3个卖单
         vm.startPrank(alice);
-        (, uint256 sell1) = sequencer.placeLimitOrder(pairId, true, 2000 * 10**8, 1 * 10**8);  // 2000 * 1
-        (, uint256 sell2) = sequencer.placeLimitOrder(pairId, true, 2100 * 10**8, 2 * 10**8);  // 2100 * 2
-        (, uint256 sell3) = sequencer.placeLimitOrder(pairId, true, 2200 * 10**8, 1 * 10**8);  // 2200 * 1
+        (, uint256 sell1) = sequencer.placeLimitOrder(pairId, true, 2000 * 10**8, 1 * 10**8, 0);  // 2000 * 1
+        (, uint256 sell2) = sequencer.placeLimitOrder(pairId, true, 2100 * 10**8, 2 * 10**8, 0);  // 2100 * 2
+        (, uint256 sell3) = sequencer.placeLimitOrder(pairId, true, 2200 * 10**8, 1 * 10**8, 0);  // 2200 * 1
         vm.stopPrank();
 
         // Bob: 3个买单（可以匹配前2个卖单）
         vm.startPrank(bob);
-        (, uint256 buy1) = sequencer.placeLimitOrder(pairId, false, 2000 * 10**8, 1 * 10**8);  // 2000 * 1 (匹配 sell1)
-        (, uint256 buy2) = sequencer.placeLimitOrder(pairId, false, 2100 * 10**8, 1 * 10**8);  // 2100 * 1 (部分匹配 sell2)
-        (, uint256 buy3) = sequencer.placeLimitOrder(pairId, false, 1900 * 10**8, 1 * 10**8);  // 1900 * 1 (不匹配)
+        (, uint256 buy1) = sequencer.placeLimitOrder(pairId, false, 2000 * 10**8, 1 * 10**8, 0);  // 2000 * 1 (匹配 sell1)
+        (, uint256 buy2) = sequencer.placeLimitOrder(pairId, false, 2100 * 10**8, 1 * 10**8, 0);  // 2100 * 1 (部分匹配 sell2)
+        (, uint256 buy3) = sequencer.placeLimitOrder(pairId, false, 1900 * 10**8, 1 * 10**8, 0);  // 1900 * 1 (不匹配)
         vm.stopPrank();
 
         console.log("Orders placed:");
@@ -255,12 +257,12 @@ contract AutoMatchingTest is Test {
         assertGt(tradeCount, 0, "Should have trade events");
 
         // 验证订单状态
-        (uint256 sell1Id, , , , , , , ) = orderbook.orders(sell1);
-        (uint256 sell2Id, , uint256 sell2Amount, uint256 sell2Filled, , , , ) = orderbook.orders(sell2);
-        (uint256 sell3Id, , , , , , , ) = orderbook.orders(sell3);
-        (uint256 buy1Id, , , , , , , ) = orderbook.orders(buy1);
-        (uint256 buy2Id, , , , , , , ) = orderbook.orders(buy2);
-        (uint256 buy3Id, , , , , , , ) = orderbook.orders(buy3);
+        (uint256 sell1Id, , , , , , , , , ) = orderbook.orders(sell1);
+        (uint256 sell2Id, , uint256 sell2Amount, uint256 sell2Filled, , , , , , ) = orderbook.orders(sell2);
+        (uint256 sell3Id, , , , , , , , , ) = orderbook.orders(sell3);
+        (uint256 buy1Id, , , , , , , , , ) = orderbook.orders(buy1);
+        (uint256 buy2Id, , , , , , , , , ) = orderbook.orders(buy2);
+        (uint256 buy3Id, , , , , , , , , ) = orderbook.orders(buy3);
 
         console.log("\nOrder states:");
         console.log("  Sell1:", sell1Id == 0 ? "REMOVED" : "EXISTS", "(expected: REMOVED)");
@@ -298,7 +300,7 @@ contract AutoMatchingTest is Test {
 
         // Alice 先下限价卖单
         vm.prank(alice);
-        (, uint256 limitSell) = sequencer.placeLimitOrder(pairId, true, 2000 * 10**8, 5 * 10**8);  // 2000 * 5 WETH
+        (, uint256 limitSell) = sequencer.placeLimitOrder(pairId, true, 2000 * 10**8, 5 * 10**8, 0);  // 2000 * 5 WETH
 
         uint256[] memory requestIds1 = new uint256[](1);
         uint256[] memory priceLevels1 = new uint256[](1);
@@ -334,8 +336,8 @@ contract AutoMatchingTest is Test {
         assertTrue(tradeFound, "Market order should trigger trade");
 
         // 验证订单状态
-        (uint256 marketId, , , , , , , ) = orderbook.orders(marketBuy);
-        (uint256 limitId, , uint256 limitAmount, uint256 limitFilled, , , , ) = orderbook.orders(limitSell);
+        (uint256 marketId, , , , , , , , , ) = orderbook.orders(marketBuy);
+        (uint256 limitId, , uint256 limitAmount, uint256 limitFilled, , , , , , ) = orderbook.orders(limitSell);
 
         assertEq(marketId, 0, "Market order should be fully filled and removed");
         assertNotEq(limitId, 0, "Limit order should still exist");
@@ -360,16 +362,19 @@ contract AutoMatchingTest is Test {
         vm.startPrank(alice);
         uint256[] memory sells = new uint256[](5);
         for (uint i = 0; i < 5; i++) {
-            (, sells[i]) = sequencer.placeLimitOrder(pairId, true, 2000 * 10**8, 5 * 10**7);  // 2000 * 0.5 WETH each
+            (, sells[i]) = sequencer.placeLimitOrder(pairId, true, 2000 * 10**8, 5 * 10**7, 0);  // 2000 * 0.5 WETH each
         }
         vm.stopPrank();
 
         // 批量插入卖单
+        // 所有订单在同一价格层级，需要按FIFO顺序设置insertAfterOrder
         uint256[] memory sellIds = new uint256[](5);
         uint256[] memory sellPriceLevels = new uint256[](5);
         uint256[] memory sellAfterOrders = new uint256[](5);
         for (uint i = 0; i < 5; i++) {
             sellIds[i] = sells[i];
+            sellPriceLevels[i] = 0;  // 第一个创建新价格层级，后续的会找到已存在的层级
+            sellAfterOrders[i] = i == 0 ? 0 : sells[i-1];  // 插入到前一个订单之后
         }
         orderbook.batchProcessRequests(sellIds, sellPriceLevels, sellAfterOrders);
 
@@ -378,7 +383,7 @@ contract AutoMatchingTest is Test {
 
         // Bob 下一个大额买单（应该匹配多个卖单）
         vm.prank(bob);
-        (, uint256 bigBuy) = sequencer.placeLimitOrder(pairId, false, 2000 * 10**8, 25 * 10**7);  // Buy 2.5 WETH
+        (, uint256 bigBuy) = sequencer.placeLimitOrder(pairId, false, 2000 * 10**8, 25 * 10**7, 0);  // Buy 2.5 WETH
 
         console.log("\nBob placed buy order: 2.5 WETH @ 2000 USDC");
         console.log("  Expected: Should match all 5 sell orders (0.5 * 5 = 2.5)");
@@ -405,11 +410,11 @@ contract AutoMatchingTest is Test {
 
         // 验证所有订单都被移除
         for (uint i = 0; i < 5; i++) {
-            (uint256 orderId, , , , , , , ) = orderbook.orders(sells[i]);
+            (uint256 orderId, , , , , , , , , ) = orderbook.orders(sells[i]);
             assertEq(orderId, 0, "All sell orders should be removed");
         }
 
-        (uint256 buyId, , , , , , , ) = orderbook.orders(bigBuy);
+        (uint256 buyId, , , , , , , , , ) = orderbook.orders(bigBuy);
         assertEq(buyId, 0, "Buy order should be removed");
 
         console.log("  [OK] All 6 orders removed (fully matched)");

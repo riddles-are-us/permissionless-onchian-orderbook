@@ -24,7 +24,8 @@ interface ISequencer {
         OrderType orderType,
         bool isAsk,
         uint256 price,  // 注意：对于 RemoveOrder，这里存储 orderIdToRemove
-        uint256 amount
+        uint256 amount,
+        uint256 uncancellableDuration  // 订单不可撤销时长（秒），0表示可立即撤销
     );
 
     function getQueuedOrder(uint256 orderId) external view returns (
@@ -33,6 +34,7 @@ interface ISequencer {
         uint8 orderType,
         bool isAsk,
         uint256 price,
-        uint256 amount
+        uint256 amount,
+        uint256 uncancellableDuration  // 订单不可撤销时长（秒），0表示可立即撤销
     );
 }

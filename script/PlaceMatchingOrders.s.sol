@@ -40,25 +40,25 @@ contract PlaceMatchingOrders is Script {
 
         // 卖单1: @ 1990 USDC (低于最高买价 2000，会被撮合)
         (uint256 reqId1,) = sequencer.placeLimitOrder(
-            pairId, true, 1990 * 10**8, 5 * 10**6  // 0.05 WETH
+            pairId, true, 1990 * 10**8, 5 * 10**6, 0  // 0.05 WETH
         );
         console.log("  [1] Sell @ 1990 USDC, 0.05 WETH - WILL MATCH with bid", reqId1);
 
         // 卖单2: @ 2000 USDC (等于最高买价 2000，会被撮合)
         (uint256 reqId2,) = sequencer.placeLimitOrder(
-            pairId, true, 2000 * 10**8, 5 * 10**6  // 0.05 WETH
+            pairId, true, 2000 * 10**8, 5 * 10**6, 0  // 0.05 WETH
         );
         console.log("  [2] Sell @ 2000 USDC, 0.05 WETH - WILL MATCH with bid", reqId2);
 
         // 卖单3: @ 2005 USDC (低于最低卖价 2010，会插入但不撮合)
         (uint256 reqId3,) = sequencer.placeLimitOrder(
-            pairId, true, 2005 * 10**8, 5 * 10**6  // 0.05 WETH
+            pairId, true, 2005 * 10**8, 5 * 10**6, 0  // 0.05 WETH
         );
         console.log("  [3] Sell @ 2005 USDC, 0.05 WETH - insert only, no match", reqId3);
 
         // 卖单4: @ 2015 USDC (高于最低卖价 2010，会插入但不撮合)
         (uint256 reqId4,) = sequencer.placeLimitOrder(
-            pairId, true, 2015 * 10**8, 5 * 10**6  // 0.05 WETH
+            pairId, true, 2015 * 10**8, 5 * 10**6, 0  // 0.05 WETH
         );
         console.log("  [4] Sell @ 2015 USDC, 0.05 WETH - insert only, no match", reqId4);
 
@@ -66,25 +66,25 @@ contract PlaceMatchingOrders is Script {
 
         // 买单1: @ 2010 USDC (等于最低卖价 2010，会被撮合)
         (uint256 reqId5,) = sequencer.placeLimitOrder(
-            pairId, false, 2010 * 10**8, 5 * 10**6  // 0.05 WETH
+            pairId, false, 2010 * 10**8, 5 * 10**6, 0  // 0.05 WETH
         );
         console.log("  [5] Buy @ 2010 USDC, 0.05 WETH - WILL MATCH with ask", reqId5);
 
         // 买单2: @ 2020 USDC (高于最低卖价 2010，会被撮合)
         (uint256 reqId6,) = sequencer.placeLimitOrder(
-            pairId, false, 2020 * 10**8, 5 * 10**6  // 0.05 WETH
+            pairId, false, 2020 * 10**8, 5 * 10**6, 0  // 0.05 WETH
         );
         console.log("  [6] Buy @ 2020 USDC, 0.05 WETH - WILL MATCH with ask", reqId6);
 
         // 买单3: @ 1995 USDC (低于最高买价 2000，会插入但不撮合)
         (uint256 reqId7,) = sequencer.placeLimitOrder(
-            pairId, false, 1995 * 10**8, 5 * 10**6  // 0.05 WETH
+            pairId, false, 1995 * 10**8, 5 * 10**6, 0  // 0.05 WETH
         );
         console.log("  [7] Buy @ 1995 USDC, 0.05 WETH - insert only, no match", reqId7);
 
         // 买单4: @ 1985 USDC (低于最高买价 2000，会插入但不撮合)
         (uint256 reqId8,) = sequencer.placeLimitOrder(
-            pairId, false, 1985 * 10**8, 5 * 10**6  // 0.05 WETH
+            pairId, false, 1985 * 10**8, 5 * 10**6, 0  // 0.05 WETH
         );
         console.log("  [8] Buy @ 1985 USDC, 0.05 WETH - insert only, no match", reqId8);
 

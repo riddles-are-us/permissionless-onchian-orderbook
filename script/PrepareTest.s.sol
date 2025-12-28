@@ -82,7 +82,8 @@ contract PrepareTestScript is Script {
             pairId,
             false, // bid
             2000 * 10**8, // price with PRICE_DECIMALS
-            1 * 10**8 // amount with AMOUNT_DECIMALS
+            1 * 10**8, // amount with AMOUNT_DECIMALS
+            0 // uncancellableDuration
         );
         console.log("Order 1: Buy 1 WETH @ 2000 USDC - RequestID:", reqId1, "OrderID:", orderId1);
 
@@ -91,7 +92,8 @@ contract PrepareTestScript is Script {
             pairId,
             false,
             1950 * 10**8,
-            1 * 10**8
+            1 * 10**8,
+            0 // uncancellableDuration
         );
         console.log("Order 2: Buy 1 WETH @ 1950 USDC - RequestID:", reqId2, "OrderID:", orderId2);
 
@@ -100,7 +102,8 @@ contract PrepareTestScript is Script {
             pairId,
             false,
             1900 * 10**8,
-            1 * 10**8
+            1 * 10**8,
+            0 // uncancellableDuration
         );
         console.log("Order 3: Buy 1 WETH @ 1900 USDC - RequestID:", reqId3, "OrderID:", orderId3);
 

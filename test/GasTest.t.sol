@@ -73,7 +73,8 @@ contract GasTest is Test {
             pairId,
             false, // buy
             2000 * 10**8, // price
-            1 * 10**8 // amount
+            1 * 10**8, // amount
+            0 // uncancellableDuration
         );
         uint256 gasUsed = gasBefore - gasleft();
 
@@ -99,7 +100,7 @@ contract GasTest is Test {
         vm.startPrank(trader1);
         uint256 firstRequestId = 2; // 第一个测试已经用了 requestId=1
         for (uint256 j = 0; j < batchSize; j++) {
-            sequencer.placeLimitOrder(pairId, false, basePrice, 1 * 10**8);
+            sequencer.placeLimitOrder(pairId, false, basePrice, 1 * 10**8, 0);
             requestIds[j] = firstRequestId + j;
             insertAfterPriceLevels[j] = j == 0 ? 0 : basePrice; // 第一个插入头部，后续插入到basePrice之后
             insertAfterOrders[j] = j == 0 ? 0 : (firstRequestId + j - 1); // 插入到前一个订单后
@@ -124,7 +125,7 @@ contract GasTest is Test {
         vm.startPrank(trader1);
         for (uint256 i = 0; i < 5; i++) {
             uint256 price = (2000 - i * 10) * 10**8;
-            sequencer.placeLimitOrder(pairId, false, price, 1 * 10**8);
+            sequencer.placeLimitOrder(pairId, false, price, 1 * 10**8, 0);
         }
         vm.stopPrank();
 
@@ -148,7 +149,7 @@ contract GasTest is Test {
         vm.startPrank(trader2);
         for (uint256 i = 0; i < 5; i++) {
             uint256 price = (2010 + i * 10) * 10**8;
-            sequencer.placeLimitOrder(pairId, true, price, 1 * 10**8);
+            sequencer.placeLimitOrder(pairId, true, price, 1 * 10**8, 0);
         }
         vm.stopPrank();
 
@@ -194,7 +195,7 @@ contract GasTest is Test {
             vm.startPrank(trader1);
             for (uint256 i = 0; i < depth; i++) {
                 uint256 price = (2000 - i * 5) * 10**8;
-                sequencer.placeLimitOrder(pairId, false, price, 1 * 10**8);
+                sequencer.placeLimitOrder(pairId, false, price, 1 * 10**8, 0);
             }
             vm.stopPrank();
 
@@ -214,7 +215,7 @@ contract GasTest is Test {
 
             // 下一个卖单触发撮合
             vm.prank(trader2);
-            sequencer.placeLimitOrder(pairId, true, 1950 * 10**8, depth * 10**8);
+            sequencer.placeLimitOrder(pairId, true, 1950 * 10**8, depth * 10**8, 0);
 
             // 处理卖单并撮合
             uint256[] memory sellRequestIds = new uint256[](1);
@@ -252,7 +253,8 @@ contract GasTest is Test {
                 pairId,
                 false,
                 (2000 - i * 10) * 10**8,
-                1 * 10**8
+                1 * 10**8,
+                0
             );
 
             uint256[] memory requestIds = new uint256[](1);
@@ -284,7 +286,8 @@ contract GasTest is Test {
                 pairId,
                 false,
                 (2000 - i * 10) * 10**8,
-                1 * 10**8
+                1 * 10**8,
+                0
             );
         }
         vm.stopPrank();
@@ -320,7 +323,7 @@ contract GasTest is Test {
 
         // 下一个订单
         vm.prank(trader1);
-        sequencer.placeLimitOrder(pairId, false, 2000 * 10**8, 1 * 10**8);
+        sequencer.placeLimitOrder(pairId, false, 2000 * 10**8, 1 * 10**8, 0);
 
         // 处理订单
         uint256[] memory requestIds = new uint256[](1);

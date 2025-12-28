@@ -52,7 +52,7 @@ contract TestMatchAllPhase2Script is Script {
         console.log("  price: 190 (lower than buy orders at 200)");
         console.log("  amount: 0.5 WETH (matches all 5 buy orders of 0.1 each)");
 
-        (uint256 requestId, ) = sequencer.placeLimitOrder(pairId, true, sellPrice, sellAmount);
+        (uint256 requestId, ) = sequencer.placeLimitOrder(pairId, true, sellPrice, sellAmount, 0);
         console.log("  Sell order requestId:", requestId);
 
         console.log("\n=== Phase 2 Complete ===");

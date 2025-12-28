@@ -87,7 +87,8 @@ contract TestPriceLevelRemoval is Script {
             pairId,
             true,   // isAsk = true (卖单)
             sellPrice,
-            sellAmount
+            sellAmount,
+            0  // uncancellableDuration
         );
         vm.stopBroadcast();
         console.log("  Sell Order ID:", sellOrderId);

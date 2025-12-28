@@ -59,22 +59,22 @@ contract TestPhase1_LimitOrders is Script {
 
         // Bid orders (买单)
         console.log(unicode"  买单 (Bid):");
-        (uint256 reqId1,) = Sequencer(sequencer).placeLimitOrder(pairId, false, 2000 * 10**8, 1 * 10**8);
+        (uint256 reqId1,) = Sequencer(sequencer).placeLimitOrder(pairId, false, 2000 * 10**8, 1 * 10**8, 0);
         console.log("    #1: Buy 1 WETH @ 2000 USDC (reqId:", reqId1, ")");
 
-        (uint256 reqId2,) = Sequencer(sequencer).placeLimitOrder(pairId, false, 1950 * 10**8, 1 * 10**8);
+        (uint256 reqId2,) = Sequencer(sequencer).placeLimitOrder(pairId, false, 1950 * 10**8, 1 * 10**8, 0);
         console.log("    #2: Buy 1 WETH @ 1950 USDC (reqId:", reqId2, ")");
 
-        (uint256 reqId3,) = Sequencer(sequencer).placeLimitOrder(pairId, false, 1900 * 10**8, 2 * 10**8);
+        (uint256 reqId3,) = Sequencer(sequencer).placeLimitOrder(pairId, false, 1900 * 10**8, 2 * 10**8, 0);
         console.log("    #3: Buy 2 WETH @ 1900 USDC (reqId:", reqId3, ")");
 
         // Ask orders (卖单)
         console.log(unicode"");
         console.log(unicode"  卖单 (Ask):");
-        (uint256 reqId4,) = Sequencer(sequencer).placeLimitOrder(pairId, true, 2100 * 10**8, 1 * 10**8);
+        (uint256 reqId4,) = Sequencer(sequencer).placeLimitOrder(pairId, true, 2100 * 10**8, 1 * 10**8, 0);
         console.log("    #4: Sell 1 WETH @ 2100 USDC (reqId:", reqId4, ")");
 
-        (uint256 reqId5,) = Sequencer(sequencer).placeLimitOrder(pairId, true, 2150 * 10**8, 1 * 10**8);
+        (uint256 reqId5,) = Sequencer(sequencer).placeLimitOrder(pairId, true, 2150 * 10**8, 1 * 10**8, 0);
         console.log("    #5: Sell 1 WETH @ 2150 USDC (reqId:", reqId5, ")");
 
         vm.stopBroadcast();

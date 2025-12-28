@@ -27,6 +27,7 @@ pub struct QueuedRequest {
     pub is_ask: bool,
     pub price: U256,
     pub amount: U256,
+    pub uncancellable_duration: U256,  // 订单不可撤销时长（秒），0表示可立即撤销
     pub order_id_to_remove: U256,
     pub next_request_id: U256,
 }
@@ -53,6 +54,8 @@ pub struct Order {
     pub filled_amount: U256,
     pub is_market_order: bool,
     pub price_level: U256,
+    pub created_at: U256,  // 订单创建时的区块时间戳
+    pub uncancellable_duration: U256,  // 订单不可撤销时长（秒），0表示可立即撤销
     pub next_order_id: U256,
     pub prev_order_id: U256,
 }
