@@ -9,6 +9,7 @@ import "./IAccount.sol";
  */
 interface IOrderBook {
     function orderTradingPairs(uint256 orderId) external view returns (bytes32);
+    function isOrderCancellable(uint256 orderId) external view returns (bool);
 }
 
 /**
@@ -41,9 +42,10 @@ contract Sequencer {
         uint8 orderType;          // 1 byte (0=LimitOrder, 1=MarketOrder)
         bool isAsk;              // 1 byte
 
-        // Slot 2-5
+        // Slot 2-6
         uint256 price;           // 32 bytes - 限价单使用；撤单请求时存储orderIdToRemove
         uint256 amount;          // 32 bytes
+        uint256 uncancellableDuration; // 32 bytes - 订单不可撤销时长（秒），0表示可立即撤销
         uint256 nextRequestId;   // 32 bytes - 队列中的下一个请求
         uint256 prevRequestId;   // 32 bytes - 队列中的上一个请求
     }
@@ -82,6 +84,7 @@ contract Sequencer {
         bool isAsk,
         uint256 price,
         uint256 amount,
+        uint256 uncancellableDuration,
         uint256 timestamp
     );
     event RemoveOrderRequested(
@@ -130,6 +133,7 @@ contract Sequencer {
      * @param isAsk true表示卖单，false表示买单
      * @param price 订单价格
      * @param amount 订单数量
+     * @param uncancellableDuration 订单不可撤销时长（秒），0表示可立即撤销
      * @return requestId 请求ID
      * @return orderId 订单ID
      */
@@ -137,7 +141,8 @@ contract Sequencer {
         bytes32 tradingPair,
         bool isAsk,
         uint256 price,
-        uint256 amount
+        uint256 amount,
+        uint256 uncancellableDuration
     ) external returns (uint256 requestId, uint256 orderId) {
         require(price > 0, "Price must be greater than 0");
         require(amount > 0, "Amount must be greater than 0");
@@ -160,13 +165,14 @@ contract Sequencer {
             isAsk,
             price,
             amount,
-            0  // orderIdToRemove不使用
+            0,  // orderIdToRemove不使用
+            uncancellableDuration
         );
 
         // 锁定用户资金
         account.lockFunds(msg.sender, tradingPair, isAsk, price, amount, orderId);
 
-        emit PlaceOrderRequested(requestId, orderId, tradingPair, msg.sender, OrderType.LimitOrder, isAsk, price, amount, block.timestamp);
+        emit PlaceOrderRequested(requestId, orderId, tradingPair, msg.sender, OrderType.LimitOrder, isAsk, price, amount, uncancellableDuration, block.timestamp);
 
         return (requestId, orderId);
     }
@@ -206,7 +212,8 @@ contract Sequencer {
             isAsk,
             0,  // 市价单价格为0
             amount,
-            0   // orderIdToRemove不使用
+            0,  // orderIdToRemove不使用
+            0   // 市价单不需要uncancellableDuration
         );
 
         // 锁定用户资金
@@ -214,7 +221,7 @@ contract Sequencer {
         // 市价买单：锁定计价代币（amount + 手续费）
         account.lockFunds(msg.sender, tradingPair, isAsk, 0, amount, orderId);
 
-        emit PlaceOrderRequested(requestId, orderId, tradingPair, msg.sender, OrderType.MarketOrder, isAsk, 0, amount, block.timestamp);
+        emit PlaceOrderRequested(requestId, orderId, tradingPair, msg.sender, OrderType.MarketOrder, isAsk, 0, amount, 0, block.timestamp);
 
         return (requestId, orderId);
     }
@@ -232,6 +239,12 @@ contract Sequencer {
         bytes32 tradingPair = IOrderBook(orderBook).orderTradingPairs(orderIdToRemove);
         require(tradingPair != bytes32(0), "Order trading pair not found");
 
+        // 验证订单是否已过不可撤销期
+        require(
+            IOrderBook(orderBook).isOrderCancellable(orderIdToRemove),
+            "Order is still in uncancellable period"
+        );
+
         // 验证订单所有权（通过OrderBook查询）
         // OrderBook会在处理时验证订单所有权
 
@@ -244,7 +257,8 @@ contract Sequencer {
             false,       // 这里不重要
             0,           // price不使用
             0,           // amount不使用
-            orderIdToRemove
+            orderIdToRemove,
+            0            // uncancellableDuration不使用
         );
 
         emit RemoveOrderRequested(requestId, orderIdToRemove, tradingPair, msg.sender, block.timestamp);
@@ -263,7 +277,8 @@ contract Sequencer {
         bool isAsk,
         uint256 price,
         uint256 amount,
-        uint256 orderIdToRemove
+        uint256 orderIdToRemove,
+        uint256 uncancellableDuration
     ) internal returns (uint256 requestId) {
         requestId = nextRequestId++;
 
@@ -280,9 +295,11 @@ contract Sequencer {
         if (requestType == RequestType.RemoveOrder) {
             request.price = orderIdToRemove;  // 存储要删除的订单ID
             request.amount = 0;
+            request.uncancellableDuration = 0;  // 撤单请求不需要此字段
         } else {
             request.price = price;
             request.amount = amount;
+            request.uncancellableDuration = uncancellableDuration;
         }
 
         // 添加到队列尾部
@@ -371,6 +388,7 @@ contract Sequencer {
      * @return isAsk 是否为卖单
      * @return price 价格（撤单请求时为 orderIdToRemove）
      * @return amount 数量
+     * @return uncancellableDuration 订单不可撤销时长（秒）
      */
     function getQueuedRequest(uint256 requestId)
         external
@@ -382,7 +400,8 @@ contract Sequencer {
             OrderType orderType,
             bool isAsk,
             uint256 price,
-            uint256 amount
+            uint256 amount,
+            uint256 uncancellableDuration
         )
     {
         QueuedRequest storage request = queuedRequests[requestId];
@@ -396,7 +415,8 @@ contract Sequencer {
             OrderType(request.orderType),
             request.isAsk,
             request.price,  // 注意：对于 RemoveOrder，这里存储的是 orderIdToRemove
-            request.amount
+            request.amount,
+            request.uncancellableDuration
         );
     }
 
@@ -413,7 +433,8 @@ contract Sequencer {
             uint8 orderType,
             bool isAsk,
             uint256 price,
-            uint256 amount
+            uint256 amount,
+            uint256 uncancellableDuration
         )
     {
         QueuedRequest storage request = queuedRequests[orderId];
@@ -427,7 +448,8 @@ contract Sequencer {
             request.orderType,  // 已经是 uint8
             request.isAsk,
             request.price,
-            request.amount
+            request.amount,
+            request.uncancellableDuration
         );
     }
 

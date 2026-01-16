@@ -127,7 +127,8 @@ contract OrderBookTest is Test {
             pairId,
             false,  // 买单
             2000 * 10**8,  // 价格 (带精度)
-            1 * 10**8  // 数量 (带精度，1个WETH)
+            1 * 10**8,  // 数量 (带精度，1个WETH)
+            0  // uncancellableDuration
         );
         aliceOrderIds.push(orderId1);
         console.log("  Order", orderId1, ": 2000 USDC buy 1 WETH");
@@ -136,7 +137,8 @@ contract OrderBookTest is Test {
             pairId,
             false,
             1950 * 10**8,  // 价格
-            2 * 10**8      // 数量 (2个WETH)
+            2 * 10**8,     // 数量 (2个WETH)
+            0  // uncancellableDuration
         );
         aliceOrderIds.push(orderId2);
         console.log("  Order", orderId2, ": 1950 USDC buy 2 WETH");
@@ -145,7 +147,8 @@ contract OrderBookTest is Test {
             pairId,
             false,
             1900 * 10**8,  // 价格
-            1 * 10**8      // 数量
+            1 * 10**8,     // 数量
+            0  // uncancellableDuration
         );
         aliceOrderIds.push(orderId3);
         console.log("  Order", orderId3, ": 1900 USDC buy 1 WETH");
@@ -160,7 +163,8 @@ contract OrderBookTest is Test {
             pairId,
             true,  // 卖单
             2100 * 10**8,  // 价格
-            1 * 10**8      // 数量
+            1 * 10**8,     // 数量
+            0  // uncancellableDuration
         );
         bobOrderIds.push(orderId4);
         console.log("  Order", orderId4, ": 2100 USDC sell 1 WETH");
@@ -169,7 +173,8 @@ contract OrderBookTest is Test {
             pairId,
             true,
             2150 * 10**8,     // 价格
-            15 * 10**7        // 数量 (1.5个WETH = 1.5 * 10^8)
+            15 * 10**7,       // 数量 (1.5个WETH = 1.5 * 10^8)
+            0  // uncancellableDuration
         );
         bobOrderIds.push(orderId5);
         console.log("  Order", orderId5, ": 2150 USDC sell 1.5 WETH");
@@ -178,7 +183,8 @@ contract OrderBookTest is Test {
             pairId,
             true,
             2200 * 10**8,     // 价格
-            5 * 10**7         // 数量 (0.5个WETH = 0.5 * 10^8)
+            5 * 10**7,        // 数量 (0.5个WETH = 0.5 * 10^8)
+            0  // uncancellableDuration
         );
         bobOrderIds.push(orderId6);
         console.log("  Order", orderId6, ": 2200 USDC sell 0.5 WETH");

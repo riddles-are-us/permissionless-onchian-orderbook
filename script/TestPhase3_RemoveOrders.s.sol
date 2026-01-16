@@ -70,7 +70,8 @@ contract TestPhase3_RemoveOrders is Script {
             pairId,
             false,  // bid
             1800 * 10**8,  // price
-            1 * 10**8  // amount
+            1 * 10**8,  // amount
+            0  // uncancellableDuration
         );
         console.log("  Order #1: Buy 1 WETH @ 1800 USDC");
         console.log("    RequestID:", reqId1);
@@ -81,7 +82,8 @@ contract TestPhase3_RemoveOrders is Script {
             pairId,
             false,
             1750 * 10**8,
-            1 * 10**8
+            1 * 10**8,
+            0  // uncancellableDuration
         );
         console.log(unicode"");
         console.log("  Order #2: Buy 1 WETH @ 1750 USDC");

@@ -59,7 +59,8 @@ contract TestAskOrderInsertion is Script {
             pairId,
             true,  // isAsk = true (卖单)
             10 * 10**8,  // price = 10
-            1 * 10**8    // amount = 1 WETH
+            1 * 10**8,   // amount = 1 WETH
+            0  // uncancellableDuration
         );
         console.log("  Order #1: Sell 1 WETH @ 10");
         console.log("    RequestID:", reqId1);
@@ -72,7 +73,8 @@ contract TestAskOrderInsertion is Script {
             pairId,
             true,  // isAsk
             9 * 10**8,   // price = 9
-            1 * 10**8    // amount = 1 WETH
+            1 * 10**8,   // amount = 1 WETH
+            0  // uncancellableDuration
         );
         console.log("  Order #2: Sell 1 WETH @ 9");
         console.log("    RequestID:", reqId2);
@@ -85,7 +87,8 @@ contract TestAskOrderInsertion is Script {
             pairId,
             true,  // isAsk
             11 * 10**8,  // price = 11
-            1 * 10**8    // amount = 1 WETH
+            1 * 10**8,   // amount = 1 WETH
+            0  // uncancellableDuration
         );
         console.log("  Order #3: Sell 1 WETH @ 11");
         console.log("    RequestID:", reqId3);

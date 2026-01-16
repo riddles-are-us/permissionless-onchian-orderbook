@@ -164,13 +164,13 @@ contract TestOrderMatchingStep is Script {
 
         // User1 买单
         vm.startBroadcast(user1Key);
-        sequencer.placeLimitOrder(pairId, false, PRICE_10, AMOUNT_10_WETH);
+        sequencer.placeLimitOrder(pairId, false, PRICE_10, AMOUNT_10_WETH, 0);
         vm.stopBroadcast();
         console.log("Buy order submitted");
 
         // User2 卖单
         vm.startBroadcast(user2Key);
-        sequencer.placeLimitOrder(pairId, true, PRICE_10, AMOUNT_10_WETH);
+        sequencer.placeLimitOrder(pairId, true, PRICE_10, AMOUNT_10_WETH, 0);
         vm.stopBroadcast();
         console.log("Sell order submitted");
 
@@ -187,12 +187,12 @@ contract TestOrderMatchingStep is Script {
         console.log("Expected: Full match at maker price (10), orderbook empty");
 
         vm.startBroadcast(user1Key);
-        sequencer.placeLimitOrder(pairId, false, PRICE_10, AMOUNT_10_WETH);
+        sequencer.placeLimitOrder(pairId, false, PRICE_10, AMOUNT_10_WETH, 0);
         vm.stopBroadcast();
         console.log("Buy order @ 10 submitted");
 
         vm.startBroadcast(user2Key);
-        sequencer.placeLimitOrder(pairId, true, PRICE_9, AMOUNT_10_WETH);
+        sequencer.placeLimitOrder(pairId, true, PRICE_9, AMOUNT_10_WETH, 0);
         vm.stopBroadcast();
         console.log("Sell order @ 9 submitted");
 
@@ -209,12 +209,12 @@ contract TestOrderMatchingStep is Script {
         console.log("Expected: No match, 1 bid @ 10, 1 ask @ 11");
 
         vm.startBroadcast(user1Key);
-        sequencer.placeLimitOrder(pairId, false, PRICE_10, AMOUNT_10_WETH);
+        sequencer.placeLimitOrder(pairId, false, PRICE_10, AMOUNT_10_WETH, 0);
         vm.stopBroadcast();
         console.log("Buy order @ 10 submitted");
 
         vm.startBroadcast(user2Key);
-        sequencer.placeLimitOrder(pairId, true, PRICE_11, AMOUNT_10_WETH);
+        sequencer.placeLimitOrder(pairId, true, PRICE_11, AMOUNT_10_WETH, 0);
         vm.stopBroadcast();
         console.log("Sell order @ 11 submitted");
 
@@ -231,7 +231,7 @@ contract TestOrderMatchingStep is Script {
         console.log("Expected: No match, 2 bids @ 10, 1 ask @ 11");
 
         vm.startBroadcast(user1Key);
-        sequencer.placeLimitOrder(pairId, false, PRICE_10, AMOUNT_10_WETH);
+        sequencer.placeLimitOrder(pairId, false, PRICE_10, AMOUNT_10_WETH, 0);
         vm.stopBroadcast();
         console.log("Buy order @ 10 submitted");
 
@@ -248,7 +248,7 @@ contract TestOrderMatchingStep is Script {
         console.log("Expected: No match, 2 bids @ 10, 2 asks @ 11");
 
         vm.startBroadcast(user2Key);
-        sequencer.placeLimitOrder(pairId, true, PRICE_11, AMOUNT_10_WETH);
+        sequencer.placeLimitOrder(pairId, true, PRICE_11, AMOUNT_10_WETH, 0);
         vm.stopBroadcast();
         console.log("Sell order @ 11 submitted");
 
@@ -265,7 +265,7 @@ contract TestOrderMatchingStep is Script {
         console.log("Expected: Match first bid @ 10, remaining: 1 bid @ 10, 2 asks @ 11");
 
         vm.startBroadcast(user2Key);
-        sequencer.placeLimitOrder(pairId, true, PRICE_10, AMOUNT_10_WETH);
+        sequencer.placeLimitOrder(pairId, true, PRICE_10, AMOUNT_10_WETH, 0);
         vm.stopBroadcast();
         console.log("Sell order @ 10 submitted");
 
@@ -282,7 +282,7 @@ contract TestOrderMatchingStep is Script {
         console.log("Expected: Match first ask @ 11, remaining: 1 bid @ 10, 1 ask @ 11");
 
         vm.startBroadcast(user1Key);
-        sequencer.placeLimitOrder(pairId, false, PRICE_11, AMOUNT_10_WETH);
+        sequencer.placeLimitOrder(pairId, false, PRICE_11, AMOUNT_10_WETH, 0);
         vm.stopBroadcast();
         console.log("Buy order @ 11 submitted");
 
@@ -295,7 +295,7 @@ contract TestOrderMatchingStep is Script {
     function placeBuy(uint256 price, uint256 amount) external {
         loadConfig();
         vm.startBroadcast(user1Key);
-        sequencer.placeLimitOrder(pairId, false, price * PRICE_DECIMALS, amount * PRICE_DECIMALS);
+        sequencer.placeLimitOrder(pairId, false, price * PRICE_DECIMALS, amount * PRICE_DECIMALS, 0);
         vm.stopBroadcast();
         console.log("Buy order submitted: price =", price);
         console.log("  amount =", amount, "WETH");
@@ -305,7 +305,7 @@ contract TestOrderMatchingStep is Script {
     function placeSell(uint256 price, uint256 amount) external {
         loadConfig();
         vm.startBroadcast(user2Key);
-        sequencer.placeLimitOrder(pairId, true, price * PRICE_DECIMALS, amount * PRICE_DECIMALS);
+        sequencer.placeLimitOrder(pairId, true, price * PRICE_DECIMALS, amount * PRICE_DECIMALS, 0);
         vm.stopBroadcast();
         console.log("Sell order submitted: price =", price);
         console.log("  amount =", amount, "WETH");

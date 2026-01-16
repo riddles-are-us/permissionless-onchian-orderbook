@@ -12,6 +12,7 @@
 - 📊 **实时监控**：完整的日志系统，监控匹配引擎运行状态
 - 🌐 **REST API**：提供 HTTP API 查询订单和订单簿
 - 💾 **MongoDB 存储**：持久化订单数据，支持历史查询
+- ⏱️ **订单不可撤销期**：支持设置订单在指定时间内不可撤销
 
 ## 架构设计
 
@@ -330,14 +331,23 @@ matcher/
 
 | 事件 | 来源 | 处理 |
 |------|------|------|
-| `PlaceOrderRequested` | Sequencer | 添加到请求队列 |
+| `PlaceOrderRequested` | Sequencer | 添加到请求队列（包含 uncancellableDuration） |
 | `RemoveOrderRequested` | Sequencer | 添加到请求队列 |
-| `OrderInserted` | OrderBook | 更新 simulator.orders |
+| `OrderInserted` | OrderBook | 更新 simulator.orders（包含 createdAt, uncancellableDuration） |
 | `PriceLevelCreated` | OrderBook | 更新 simulator.price_levels |
 | `PriceLevelRemoved` | OrderBook | 从 simulator 移除 |
 | `OrderFilled` | OrderBook | 更新订单 filled_amount |
 | `OrderRemoved` | OrderBook | 从 simulator 移除 |
 | `Trade` | OrderBook | 记录交易日志 |
+
+## 订单不可撤销期
+
+限价订单可以设置 `uncancellableDuration` 参数（秒），在此期间订单无法被撤销：
+
+- `uncancellableDuration = 0`：订单可立即撤销
+- `uncancellableDuration > 0`：订单在 `createdAt + uncancellableDuration` 之后才能撤销
+
+撤销请求在进入 Sequencer 队列之前会进行时间检查，若订单仍在不可撤销期内，请求会被拒绝。
 
 ## 日志示例
 

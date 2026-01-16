@@ -44,7 +44,7 @@ contract TestMarketBuyFillAmountScript is Script {
         console.log("\n=== Step 1: Place limit buy order ===");
         uint256 buyPrice = 2000 * 10**8;  // 2000 USDC (8 decimals for price)
         uint256 buyAmount = 10 * 10**8;   // 10 base tokens (8 decimals)
-        (uint256 reqId1, uint256 orderId1) = sequencer.placeLimitOrder(pairId, false, buyPrice, buyAmount);
+        (uint256 reqId1, uint256 orderId1) = sequencer.placeLimitOrder(pairId, false, buyPrice, buyAmount, 0);
         console.log("  Limit Buy - RequestId:", reqId1, "OrderId:", orderId1);
         console.log("  Price: 2000, Amount: 10");
 
@@ -52,7 +52,7 @@ contract TestMarketBuyFillAmountScript is Script {
         console.log("\n=== Step 2: Place limit sell order ===");
         uint256 sellPrice = 2001 * 10**8;  // 2001 USDC (8 decimals for price)
         uint256 sellAmount = 10 * 10**8;   // 10 base tokens (8 decimals)
-        (uint256 reqId2, uint256 orderId2) = sequencer.placeLimitOrder(pairId, true, sellPrice, sellAmount);
+        (uint256 reqId2, uint256 orderId2) = sequencer.placeLimitOrder(pairId, true, sellPrice, sellAmount, 0);
         console.log("  Limit Sell - RequestId:", reqId2, "OrderId:", orderId2);
         console.log("  Price: 2001, Amount: 10");
 

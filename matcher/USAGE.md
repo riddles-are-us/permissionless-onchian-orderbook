@@ -117,11 +117,11 @@ On startup, the matcher syncs the current state:
 After initial sync, the matcher subscribes to events:
 
 **From Sequencer:**
-- `PlaceOrderRequested`: Add to local request queue
+- `PlaceOrderRequested`: Add to local request queue (includes `uncancellableDuration`)
 - `RemoveOrderRequested`: Add to local request queue
 
 **From OrderBook:**
-- `OrderInserted`: Add order to local simulator
+- `OrderInserted`: Add order to local simulator (includes `createdAt`, `uncancellableDuration`)
 - `PriceLevelCreated`: Add price level to local simulator
 - `PriceLevelRemoved`: Remove price level from simulator
 - `OrderFilled`: Update order's filled amount
@@ -280,9 +280,17 @@ Calculates `insertAfterPrice` for correct linked list insertion:
 - Ask orders: sorted by price ascending (low to high)
 - Bid orders: sorted by price descending (high to low)
 
+**Uncancellable Duration**: Limit orders can specify an `uncancellableDuration` parameter (in seconds) that prevents the order from being cancelled during this period:
+- `uncancellableDuration = 0`: Order can be cancelled immediately
+- `uncancellableDuration > 0`: Order cannot be cancelled until `createdAt + uncancellableDuration` has passed
+
+This feature is useful for market makers who want to guarantee order availability for a certain period.
+
 ### RemoveOrder
 
 Simulates order removal to ensure subsequent insertions calculate correct positions.
+
+**Cancellation Restriction**: Before a remove request enters the Sequencer queue, the system checks if the order is still within its uncancellable period. If `block.timestamp < order.createdAt + order.uncancellableDuration`, the cancellation request is rejected.
 
 ## REST API
 

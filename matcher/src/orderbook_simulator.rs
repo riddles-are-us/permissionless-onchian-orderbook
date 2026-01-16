@@ -1036,7 +1036,7 @@ mod tests {
             false, // bid
         );
 
-        assert_eq!(insert_after, U256::zero()); // 空订单簿，插入头部
+        assert_eq!(insert_after.0, U256::zero()); // 空订单簿，插入头部（检查 insert_after_price_level）
         assert_eq!(sim.bid_head, U256::from(100));
         assert_eq!(sim.get_price_levels(false), vec![U256::from(100)]);
     }
@@ -1052,7 +1052,7 @@ mod tests {
             U256::from(10),
             false,
         );
-        assert_eq!(insert1, U256::zero());
+        assert_eq!(insert1.0, U256::zero()); // 检查 insert_after_price_level
 
         // 插入买单2: price=90 (低于100，应该在100之后)
         let insert2 = sim.simulate_insert_order(
@@ -1061,7 +1061,7 @@ mod tests {
             U256::from(10),
             false,
         );
-        assert_eq!(insert2, U256::from(100)); // 插入到100之后
+        assert_eq!(insert2.0, U256::from(100)); // 插入到100之后（检查 insert_after_price_level）
 
         // 插入买单3: price=110 (高于100，应该成为新头部)
         let insert3 = sim.simulate_insert_order(
@@ -1070,7 +1070,7 @@ mod tests {
             U256::from(10),
             false,
         );
-        assert_eq!(insert3, U256::zero()); // 插入到头部
+        assert_eq!(insert3.0, U256::zero()); // 插入到头部（检查 insert_after_price_level）
 
         // 验证顺序: 110 -> 100 -> 90
         assert_eq!(sim.get_price_levels(false), vec![
@@ -1091,7 +1091,7 @@ mod tests {
             U256::from(10),
             true, // ask
         );
-        assert_eq!(insert1, U256::zero());
+        assert_eq!(insert1.0, U256::zero()); // 检查 insert_after_price_level
 
         // 插入卖单2: price=110 (高于100，应该在100之后)
         let insert2 = sim.simulate_insert_order(
@@ -1100,7 +1100,7 @@ mod tests {
             U256::from(10),
             true,
         );
-        assert_eq!(insert2, U256::from(100)); // 插入到100之后
+        assert_eq!(insert2.0, U256::from(100)); // 插入到100之后（检查 insert_after_price_level）
 
         // 插入卖单3: price=90 (低于100，应该成为新头部)
         let insert3 = sim.simulate_insert_order(
@@ -1109,7 +1109,7 @@ mod tests {
             U256::from(10),
             true,
         );
-        assert_eq!(insert3, U256::zero()); // 插入到头部
+        assert_eq!(insert3.0, U256::zero()); // 插入到头部（检查 insert_after_price_level）
 
         // 验证顺序: 90 -> 100 -> 110 (ask 从低到高)
         assert_eq!(sim.get_price_levels(true), vec![
@@ -1197,7 +1197,7 @@ mod tests {
         );
 
         // insertAfterPrice 应该基于插入前的状态（ask 侧为空）
-        assert_eq!(insert_after, U256::zero());
+        assert_eq!(insert_after.0, U256::zero()); // 检查 insert_after_price_level
 
         // 卖单完全成交
         assert!(!sim.orders.contains_key(&U256::from(2)));
@@ -1224,7 +1224,7 @@ mod tests {
 
         // 新买单应该插入到头部
         let insert_after = sim.simulate_insert_order(U256::from(3), U256::from(95), U256::from(10), false);
-        assert_eq!(insert_after, U256::zero());
+        assert_eq!(insert_after.0, U256::zero()); // 检查 insert_after_price_level
     }
 
     // ============ 市价单测试 ============
@@ -1369,7 +1369,7 @@ mod tests {
             U256::from(10),
             true,
         );
-        assert_eq!(insert_after, U256::zero()); // 正确！插入到头部
+        assert_eq!(insert_after.0, U256::zero()); // 正确！插入到头部（检查 insert_after_price_level）
 
         // 验证新状态
         assert_eq!(sim.get_price_levels(true), vec![

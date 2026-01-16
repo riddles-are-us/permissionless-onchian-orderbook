@@ -106,9 +106,9 @@ contract TestFIFO is Script {
     function step1_A_buy() external {
         loadConfig();
         console.log("=== Step 1: User A places BUY order @10 ===");
-        
+
         vm.startBroadcast(userAKey);
-        sequencer.placeLimitOrder(pairId, false, PRICE_10, AMOUNT_10_WETH);  // isAsk=false (buy)
+        sequencer.placeLimitOrder(pairId, false, PRICE_10, AMOUNT_10_WETH, 0);  // isAsk=false (buy)
         vm.stopBroadcast();
         
         console.log("User A placed BUY 10 WETH @ price 10");
@@ -119,9 +119,9 @@ contract TestFIFO is Script {
     function step2_B_buy() external {
         loadConfig();
         console.log("=== Step 2: User B places BUY order @10 ===");
-        
+
         vm.startBroadcast(userBKey);
-        sequencer.placeLimitOrder(pairId, false, PRICE_10, AMOUNT_10_WETH);  // isAsk=false (buy)
+        sequencer.placeLimitOrder(pairId, false, PRICE_10, AMOUNT_10_WETH, 0);  // isAsk=false (buy)
         vm.stopBroadcast();
         
         console.log("User B placed BUY 10 WETH @ price 10");
@@ -132,9 +132,9 @@ contract TestFIFO is Script {
     function step3_C_sell() external {
         loadConfig();
         console.log("=== Step 3: User C places SELL order @10 ===");
-        
+
         vm.startBroadcast(userCKey);
-        sequencer.placeLimitOrder(pairId, true, PRICE_10, AMOUNT_10_WETH);   // isAsk=true (sell)
+        sequencer.placeLimitOrder(pairId, true, PRICE_10, AMOUNT_10_WETH, 0);   // isAsk=true (sell)
         vm.stopBroadcast();
         
         console.log("User C placed SELL 10 WETH @ price 10");

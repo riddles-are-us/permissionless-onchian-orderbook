@@ -16,6 +16,8 @@ contract OrderBook {
         uint256 filledAmount;
         bool isMarketOrder;  // true表示市价单，false表示限价单
         uint256 priceLevel;  // 该订单所属的价格（限价单使用，直接存储price值）
+        uint256 createdAt;  // 订单创建时的区块时间戳
+        uint256 uncancellableDuration;  // 订单不可撤销时长（秒），0表示可立即撤销
         uint256 nextOrderId;  // 同一价格层级下的下一个订单或市价单列表中的下一个订单
         uint256 prevOrderId;  // 同一价格层级下的上一个订单或市价单列表中的上一个订单
     }
@@ -152,7 +154,8 @@ contract OrderBook {
             uint8 orderType,
             bool isAsk,
             uint256 price,
-            uint256 amount
+            uint256 amount,
+            uint256 uncancellableDuration
         ) = sequencer.getQueuedOrder(sequencerOrderId);
 
         // 验证是限价单
@@ -176,6 +179,8 @@ contract OrderBook {
         order.filledAmount = 0;
         order.isMarketOrder = false;
         order.priceLevel = priceLevelId;
+        order.createdAt = block.timestamp;
+        order.uncancellableDuration = uncancellableDuration;
 
         // 记录订单对应的交易对（用于撤单和撮合时的资金处理）
         orderTradingPairs[sequencerOrderId] = tradingPair;
@@ -208,7 +213,8 @@ contract OrderBook {
             ,  // orderType
             ,  // isAsk
             uint256 priceOrOrderId,  // 对于 RemoveOrder，这里是 orderIdToRemove
-            uint256 _unusedAmount
+            ,  // amount
+            // uncancellableDuration (not used for remove requests)
         ) = sequencer.getQueuedRequest(requestId);
 
         // 验证是撤单请求
@@ -313,7 +319,8 @@ contract OrderBook {
             ,  // orderType
             ,  // isAsk
             ,  // price
-            // amount
+            ,  // amount
+            // uncancellableDuration
         ) = sequencer.getQueuedRequest(requestIds[0]);
 
         (, address quoteToken, bool exists) = account.getTradingPair(tradingPair);
@@ -340,7 +347,8 @@ contract OrderBook {
                 ,  // orderType
                 ,  // isAsk
                 ,  // price
-                // amount
+                ,  // amount
+                // uncancellableDuration
             ) = sequencer.getQueuedRequest(requestId);
 
             // 根据请求类型处理
@@ -385,7 +393,8 @@ contract OrderBook {
             ISequencer.OrderType orderType,
             bool isAsk,
             uint256 price,
-            uint256 amount
+            uint256 amount,
+            uint256 uncancellableDuration
         ) = sequencer.getQueuedRequest(requestId);
 
         if (uint8(orderType) == 0) {
@@ -404,6 +413,8 @@ contract OrderBook {
             order.filledAmount = 0;
             order.isMarketOrder = false;
             order.priceLevel = priceLevelId;
+            order.createdAt = block.timestamp;
+            order.uncancellableDuration = uncancellableDuration;
 
             orderTradingPairs[requestId] = tradingPair;
             _insertOrderIntoPriceLevel(priceLevelId, requestId, insertAfterOrder, isAsk);
@@ -422,6 +433,8 @@ contract OrderBook {
             order.filledAmount = 0;
             order.isMarketOrder = true;
             order.priceLevel = EMPTY;
+            order.createdAt = block.timestamp;
+            order.uncancellableDuration = 0;  // 市价单不需要不可撤销时长
 
             orderTradingPairs[requestId] = tradingPair;
             _insertMarketOrderAtTail(tradingPair, isAsk, requestId);
@@ -446,7 +459,8 @@ contract OrderBook {
             ,  // orderType
             ,  // isAsk
             uint256 priceOrOrderId,  // 对于 RemoveOrder，这里是 orderIdToRemove
-            uint256 _unusedAmount
+            ,  // amount
+            // uncancellableDuration (not used for remove requests)
         ) = sequencer.getQueuedRequest(requestId);
 
         // 对于撤单请求，price 字段存储的是 orderIdToRemove
@@ -785,6 +799,20 @@ contract OrderBook {
     // ============ 查询函数 ============
 
     /**
+     * @notice 检查订单是否可以被撤销
+     * @param orderId 订单ID
+     * @return 如果订单已过不可撤销期则返回true，否则返回false
+     */
+    function isOrderCancellable(uint256 orderId) external view returns (bool) {
+        Order storage order = orders[orderId];
+        if (order.id == 0) {
+            return false;  // 订单不存在
+        }
+        // 如果当前时间 >= 订单创建时间 + 不可撤销时长，则可以撤销
+        return block.timestamp >= order.createdAt + order.uncancellableDuration;
+    }
+
+    /**
      * @notice 获取交易对的订单簿快照
      */
     function getOrderBookSnapshot(bytes32 tradingPair, bool isAsk, uint256 depth)
@@ -843,7 +871,8 @@ contract OrderBook {
             uint8 orderType,
             bool isAsk,
             ,  // price
-            uint256 amount
+            uint256 amount,
+            // uncancellableDuration (市价单不需要)
         ) = sequencer.getQueuedOrder(sequencerOrderId);
 
         // 验证是市价单
@@ -858,6 +887,8 @@ contract OrderBook {
         order.filledAmount = 0;
         order.isMarketOrder = true;
         order.priceLevel = EMPTY;  // 市价单不需要价格层级
+        order.createdAt = block.timestamp;
+        order.uncancellableDuration = 0;  // 市价单不需要不可撤销时长
 
         // 记录订单对应的交易对
         orderTradingPairs[sequencerOrderId] = tradingPair;

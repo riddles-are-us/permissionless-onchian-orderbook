@@ -61,7 +61,7 @@ contract TestMatchAllScript is Script {
         console.log("Each order: price=200, amount=0.1 WETH");
 
         for (uint256 i = 0; i < 5; i++) {
-            (uint256 requestId, ) = sequencer.placeLimitOrder(pairId, false, buyPrice, buyAmount);
+            (uint256 requestId, ) = sequencer.placeLimitOrder(pairId, false, buyPrice, buyAmount, 0);
             console.log("  Buy order #%s: requestId=%s", i+1, requestId);
         }
 
