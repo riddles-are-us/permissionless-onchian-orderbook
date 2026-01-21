@@ -131,8 +131,7 @@ impl StateSynchronizer {
         self.sync_match_id().await?;
 
         // 同步 OrderBook 状态到 GlobalState.orderbook
-        // TODO: 临时注释掉，改用 event sync 来重建订单簿状态以验证 event sync 逻辑
-        // self.sync_orderbook_state().await?;
+        self.sync_orderbook_state().await?;
 
         // 更新 synced_block 为当前区块，watch_events 会从 current_block + 1 开始监听
         // 在 minimal sync 模式下，不处理历史事件
@@ -160,8 +159,7 @@ impl StateSynchronizer {
         self.sync_sequencer_state(current_block).await?;
 
         // 同步 OrderBook 状态到 GlobalState.orderbook
-        // TODO: 临时注释掉，改用 event sync 来重建订单簿状态以验证 event sync 逻辑
-        // self.sync_orderbook_state().await?;
+        self.sync_orderbook_state().await?;
 
         // 同步 matchId
         self.sync_match_id().await?;

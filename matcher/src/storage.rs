@@ -460,17 +460,35 @@ impl MongoStorage {
         Ok(())
     }
 
-    /// 保存交易记录
+    /// 保存交易记录（使用 upsert 避免重复）
     pub async fn insert_trade(&self, trade: &StoredTrade) -> Result<()> {
         let collection = self.trades_collection();
-        collection.insert_one(trade, None).await?;
+
+        let filter = doc! { "_id": &trade.trade_id };
+        let update = doc! {
+            "$set": mongodb::bson::to_document(trade)?
+        };
+
+        collection
+            .update_one(filter, update, mongodb::options::UpdateOptions::builder().upsert(true).build())
+            .await?;
+
         Ok(())
     }
 
-    /// 保存batch提交记录
+    /// 保存batch提交记录（使用 upsert 避免重复）
     pub async fn insert_batch_submission(&self, submission: &BatchSubmission) -> Result<()> {
         let collection = self.batch_submissions_collection();
-        collection.insert_one(submission, None).await?;
+
+        let filter = doc! { "_id": &submission.match_id };
+        let update = doc! {
+            "$set": mongodb::bson::to_document(submission)?
+        };
+
+        collection
+            .update_one(filter, update, mongodb::options::UpdateOptions::builder().upsert(true).build())
+            .await?;
+
         Ok(())
     }
 
