@@ -53,6 +53,7 @@ pub struct Order {
     pub amount: U256,
     pub filled_amount: U256,
     pub is_market_order: bool,
+    pub is_ask: bool,  // true表示卖单，false表示买单（避免执行时遍历链表判断）
     pub price_level: U256,
     pub created_at: U256,  // 订单创建时的区块时间戳
     pub uncancellable_duration: U256,  // 订单不可撤销时长（秒），0表示可立即撤销

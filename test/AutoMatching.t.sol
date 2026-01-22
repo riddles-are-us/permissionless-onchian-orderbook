@@ -106,7 +106,7 @@ contract AutoMatchingTest is Test {
         console.log("  Inserted into orderbook");
 
         // 验证订单存在
-        (uint256 orderId, , uint256 amount, uint256 filledAmount, , , , , , ) = orderbook.orders(sellOrderId);
+        (uint256 orderId, , uint256 amount, uint256 filledAmount, , , , , , , ) = orderbook.orders(sellOrderId);
         assertEq(orderId, sellOrderId, "Sell order should exist");
         assertEq(filledAmount, 0, "Sell order should not be filled yet");
         console.log("  Verified: Order exists, not filled");
@@ -169,8 +169,8 @@ contract AutoMatchingTest is Test {
         assertTrue(sellOrderFilledFound, "Sell order filled event should be emitted");
 
         // 验证订单已完全成交并被移除
-        (uint256 buyId, , , uint256 buyFilled, , , , , , ) = orderbook.orders(buyOrderId);
-        (uint256 sellId, , , uint256 sellFilled, , , , , , ) = orderbook.orders(sellOrderId);
+        (uint256 buyId, , , uint256 buyFilled, , , , , , , ) = orderbook.orders(buyOrderId);
+        (uint256 sellId, , , uint256 sellFilled, , , , , , , ) = orderbook.orders(sellOrderId);
 
         assertEq(buyId, 0, "Buy order should be removed (fully filled)");
         assertEq(sellId, 0, "Sell order should be removed (fully filled)");
@@ -257,12 +257,12 @@ contract AutoMatchingTest is Test {
         assertGt(tradeCount, 0, "Should have trade events");
 
         // 验证订单状态
-        (uint256 sell1Id, , , , , , , , , ) = orderbook.orders(sell1);
-        (uint256 sell2Id, , uint256 sell2Amount, uint256 sell2Filled, , , , , , ) = orderbook.orders(sell2);
-        (uint256 sell3Id, , , , , , , , , ) = orderbook.orders(sell3);
-        (uint256 buy1Id, , , , , , , , , ) = orderbook.orders(buy1);
-        (uint256 buy2Id, , , , , , , , , ) = orderbook.orders(buy2);
-        (uint256 buy3Id, , , , , , , , , ) = orderbook.orders(buy3);
+        (uint256 sell1Id, , , , , , , , , , ) = orderbook.orders(sell1);
+        (uint256 sell2Id, , uint256 sell2Amount, uint256 sell2Filled, , , , , , , ) = orderbook.orders(sell2);
+        (uint256 sell3Id, , , , , , , , , , ) = orderbook.orders(sell3);
+        (uint256 buy1Id, , , , , , , , , , ) = orderbook.orders(buy1);
+        (uint256 buy2Id, , , , , , , , , , ) = orderbook.orders(buy2);
+        (uint256 buy3Id, , , , , , , , , , ) = orderbook.orders(buy3);
 
         console.log("\nOrder states:");
         console.log("  Sell1:", sell1Id == 0 ? "REMOVED" : "EXISTS", "(expected: REMOVED)");
@@ -336,8 +336,8 @@ contract AutoMatchingTest is Test {
         assertTrue(tradeFound, "Market order should trigger trade");
 
         // 验证订单状态
-        (uint256 marketId, , , , , , , , , ) = orderbook.orders(marketBuy);
-        (uint256 limitId, , uint256 limitAmount, uint256 limitFilled, , , , , , ) = orderbook.orders(limitSell);
+        (uint256 marketId, , , , , , , , , , ) = orderbook.orders(marketBuy);
+        (uint256 limitId, , uint256 limitAmount, uint256 limitFilled, , , , , , , ) = orderbook.orders(limitSell);
 
         assertEq(marketId, 0, "Market order should be fully filled and removed");
         assertNotEq(limitId, 0, "Limit order should still exist");
@@ -410,11 +410,11 @@ contract AutoMatchingTest is Test {
 
         // 验证所有订单都被移除
         for (uint i = 0; i < 5; i++) {
-            (uint256 orderId, , , , , , , , , ) = orderbook.orders(sells[i]);
+            (uint256 orderId, , , , , , , , , , ) = orderbook.orders(sells[i]);
             assertEq(orderId, 0, "All sell orders should be removed");
         }
 
-        (uint256 buyId, , , , , , , , , ) = orderbook.orders(bigBuy);
+        (uint256 buyId, , , , , , , , , , ) = orderbook.orders(bigBuy);
         assertEq(buyId, 0, "Buy order should be removed");
 
         console.log("  [OK] All 6 orders removed (fully matched)");
