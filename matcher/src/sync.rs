@@ -419,6 +419,15 @@ impl StateSynchronizer {
                         _ => StoredOrderType::Limit,
                     };
 
+                    // 从事件中提取链上时间戳和不可撤销时长
+                    let chain_created_at = place_order.timestamp.as_u64();
+                    let uncancellable_duration = place_order.uncancellable_duration.as_u64();
+                    let uncancellable_until = if uncancellable_duration > 0 {
+                        Some(chain_created_at + uncancellable_duration)
+                    } else {
+                        None
+                    };
+
                     let stored_order = StoredOrder {
                         order_id: place_order.request_id.to_string(),
                         trading_pair: format!("0x{}", hex::encode(place_order.trading_pair)),
@@ -433,6 +442,9 @@ impl StateSynchronizer {
                         updated_at: BsonDateTime::now(),
                         block_number,
                         tx_hash: None,
+                        chain_created_at,
+                        uncancellable_duration,
+                        uncancellable_until,
                     };
 
                     if let Err(e) = storage.upsert_order(&stored_order).await {
@@ -657,6 +669,17 @@ impl StateSynchronizer {
                     OrderStatus::Filled
                 };
 
+                // 从链上订单数据中提取 createdAt 和 uncancellableDuration
+                // order_data 索引: 0=id, 1=trader, 2=amount, 3=filledAmount, 4=isMarketOrder,
+                //                  5=priceLevel, 6=createdAt, 7=uncancellableDuration, 8=nextOrderId, 9=prevOrderId
+                let chain_created_at = order_data.6.as_u64();
+                let uncancellable_duration = order_data.7.as_u64();
+                let uncancellable_until = if uncancellable_duration > 0 {
+                    Some(chain_created_at + uncancellable_duration)
+                } else {
+                    None
+                };
+
                 let stored_order = StoredOrder {
                     order_id: current_order_id.to_string(),
                     trading_pair: format!("0x{}", hex::encode(trading_pair)),
@@ -675,6 +698,9 @@ impl StateSynchronizer {
                     updated_at: BsonDateTime::now(),
                     block_number: self.synced_block,
                     tx_hash: None,
+                    chain_created_at,
+                    uncancellable_duration,
+                    uncancellable_until,
                 };
 
                 if let Err(e) = storage.upsert_order(&stored_order).await {
@@ -1304,6 +1330,15 @@ impl StateSynchronizer {
                 state.add_request_to_tail(request);
 
                 if let Some(ref storage) = storage {
+                    // 从事件中提取链上时间戳和不可撤销时长
+                    let chain_created_at = place_order.timestamp.as_u64();
+                    let uncancellable_duration = place_order.uncancellable_duration.as_u64();
+                    let uncancellable_until = if uncancellable_duration > 0 {
+                        Some(chain_created_at + uncancellable_duration)
+                    } else {
+                        None
+                    };
+
                     let stored_order = StoredOrder {
                         order_id: place_order.request_id.to_string(),
                         trading_pair: format!("0x{}", hex::encode(place_order.trading_pair)),
@@ -1321,6 +1356,9 @@ impl StateSynchronizer {
                         updated_at: BsonDateTime::now(),
                         block_number,
                         tx_hash: None,
+                        chain_created_at,
+                        uncancellable_duration,
+                        uncancellable_until,
                     };
 
                     if let Err(e) = storage.upsert_order(&stored_order).await {

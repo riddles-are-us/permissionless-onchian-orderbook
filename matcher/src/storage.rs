@@ -94,7 +94,7 @@ pub struct StoredOrder {
     /// 订单状态
     pub status: OrderStatus,
 
-    /// 创建时间 (区块时间戳或事件时间)
+    /// 创建时间 (事件处理时间，用于排序)
     #[serde(with = "bson_datetime_as_iso8601")]
     pub created_at: BsonDateTime,
 
@@ -107,6 +107,21 @@ pub struct StoredOrder {
 
     /// 创建时的交易哈希
     pub tx_hash: Option<String>,
+
+    /// 链上订单创建时间戳 (block.timestamp，秒)
+    /// 用于计算 uncancellable_until
+    #[serde(default)]
+    pub chain_created_at: u64,
+
+    /// 订单不可撤销时长（秒），0表示可立即撤销
+    #[serde(default)]
+    pub uncancellable_duration: u64,
+
+    /// 订单不可撤销截止时间戳（秒）
+    /// = chain_created_at + uncancellable_duration
+    /// 如果为 0 或 None，表示可立即撤销
+    #[serde(default)]
+    pub uncancellable_until: Option<u64>,
 }
 
 /// K线时间周期
