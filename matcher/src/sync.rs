@@ -639,15 +639,18 @@ impl StateSynchronizer {
             // 获取订单数据
             let order_data = self.orderbook.orders(current_order_id).call().await?;
 
+            // Order ABI indices (including isAsk):
+            // 0=id, 1=trader, 2=amount, 3=filledAmount, 4=isMarketOrder, 5=isAsk,
+            // 6=priceLevel, 7=createdAt, 8=uncancellableDuration, 9=nextOrderId, 10=prevOrderId
             let sim_order = SimOrder {
                 id: order_data.0,
                 amount: order_data.2,
                 filled_amount: order_data.3,
                 is_market_order: order_data.4,
-                is_ask,
-                price_level: order_data.5,
-                next_order_id: order_data.6,
-                prev_order_id: order_data.7,
+                is_ask: order_data.5,
+                price_level: order_data.6,
+                next_order_id: order_data.9,
+                prev_order_id: order_data.10,
             };
 
             let next_id = sim_order.next_order_id;
@@ -670,10 +673,10 @@ impl StateSynchronizer {
                 };
 
                 // 从链上订单数据中提取 createdAt 和 uncancellableDuration
-                // order_data 索引: 0=id, 1=trader, 2=amount, 3=filledAmount, 4=isMarketOrder,
-                //                  5=priceLevel, 6=createdAt, 7=uncancellableDuration, 8=nextOrderId, 9=prevOrderId
-                let chain_created_at = order_data.6.as_u64();
-                let uncancellable_duration = order_data.7.as_u64();
+                // order_data ABI索引: 0=id, 1=trader, 2=amount, 3=filledAmount, 4=isMarketOrder, 5=isAsk,
+                //                     6=priceLevel, 7=createdAt, 8=uncancellableDuration, 9=nextOrderId, 10=prevOrderId
+                let chain_created_at = order_data.7.as_u64();
+                let uncancellable_duration = order_data.8.as_u64();
                 let uncancellable_until = if uncancellable_duration > 0 {
                     Some(chain_created_at + uncancellable_duration)
                 } else {
