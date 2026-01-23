@@ -15,6 +15,7 @@ contract OrderBook {
         uint256 amount;
         uint256 filledAmount;
         bool isMarketOrder;  // true表示市价单，false表示限价单
+        bool isAsk;  // true表示卖单，false表示买单（避免执行时遍历链表判断）
         uint256 priceLevel;  // 该订单所属的价格（限价单使用，直接存储price值）
         uint256 createdAt;  // 订单创建时的区块时间戳
         uint256 uncancellableDuration;  // 订单不可撤销时长（秒），0表示可立即撤销
@@ -178,6 +179,7 @@ contract OrderBook {
         order.amount = amount;
         order.filledAmount = 0;
         order.isMarketOrder = false;
+        order.isAsk = isAsk;
         order.priceLevel = priceLevelId;
         order.createdAt = block.timestamp;
         order.uncancellableDuration = uncancellableDuration;
@@ -231,11 +233,11 @@ contract OrderBook {
         bool isAsk;
 
         // 处理限价单或市价单的删除
-        if (order.isMarketOrder) {
-            // 市价单：判断是买单还是卖单
-            OrderBookData storage book = orderBooks[tradingPair];
-            isAsk = _isMarketAskOrder(book, orderIdToRemove);
+        // 直接使用 order.isAsk，避免遍历链表
+        isAsk = order.isAsk;
 
+        if (order.isMarketOrder) {
+            // 市价单
             uint256 remainingAmount = order.amount - order.filledAmount;
             if (remainingAmount > 0) {
                 account.unlockFunds(
@@ -251,10 +253,6 @@ contract OrderBook {
         } else {
             // 限价单
             uint256 priceLevelId = order.priceLevel;
-
-            // 判断是ask还是bid
-            OrderBookData storage book = orderBooks[tradingPair];
-            isAsk = _isAskOrder(book, priceLevelId);
 
             // 使用composite key访问priceLevel
             uint256 levelKey = _getPriceLevelKey(priceLevelId, isAsk);
@@ -412,6 +410,7 @@ contract OrderBook {
             order.amount = amount;
             order.filledAmount = 0;
             order.isMarketOrder = false;
+            order.isAsk = isAsk;
             order.priceLevel = priceLevelId;
             order.createdAt = block.timestamp;
             order.uncancellableDuration = uncancellableDuration;
@@ -432,6 +431,7 @@ contract OrderBook {
             order.amount = amount;
             order.filledAmount = 0;
             order.isMarketOrder = true;
+            order.isAsk = isAsk;
             order.priceLevel = EMPTY;
             order.createdAt = block.timestamp;
             order.uncancellableDuration = 0;  // 市价单不需要不可撤销时长
@@ -471,11 +471,11 @@ contract OrderBook {
 
         tradingPair = orderTradingPairs[orderIdToRemove];
 
-        if (order.isMarketOrder) {
-            // 判断市价单是买单还是卖单（通过检查在哪个列表中）
-            OrderBookData storage book = orderBooks[tradingPair];
-            bool isAsk = _isMarketAskOrder(book, orderIdToRemove);
+        // 直接使用 order.isAsk，避免遍历链表
+        bool isAsk = order.isAsk;
 
+        if (order.isMarketOrder) {
+            // 市价单
             uint256 remainingAmount = order.amount - order.filledAmount;
             if (remainingAmount > 0) {
                 account.unlockFunds(
@@ -489,10 +489,8 @@ contract OrderBook {
             }
             _removeMarketOrderFromList(tradingPair, orderIdToRemove, isAsk);
         } else {
+            // 限价单
             uint256 priceLevelId = order.priceLevel;
-
-            OrderBookData storage book = orderBooks[tradingPair];
-            bool isAsk = _isAskOrder(book, priceLevelId);
 
             // 使用composite key访问priceLevel
             uint256 levelKey = _getPriceLevelKey(priceLevelId, isAsk);
@@ -886,6 +884,7 @@ contract OrderBook {
         order.amount = amount;
         order.filledAmount = 0;
         order.isMarketOrder = true;
+        order.isAsk = isAsk;
         order.priceLevel = EMPTY;  // 市价单不需要价格层级
         order.createdAt = block.timestamp;
         order.uncancellableDuration = 0;  // 市价单不需要不可撤销时长
@@ -1131,6 +1130,30 @@ contract OrderBook {
         uint256 tradeAmount = bidRemaining < askRemaining ? bidRemaining : askRemaining;
 
         if (tradeAmount == 0) {
+            // tradeAmount == 0 可能有两种情况：
+            // 1. 订单已精确成交完毕（filledAmount == amount）
+            // 2. 由于精度问题，剩余数量在转换后向下取整为0（常见于市价买单）
+            //
+            // 对于情况2，订单可能已成交99.99%但无法继续成交，
+            // 如果剩余价值低于 DUST_THRESHOLD（0.01 USDC），应视为完全成交并移除订单，
+            // 避免订单一直卡在 OPEN 状态占用系统资源
+
+            bool bidShouldClose = _isOrderFullyFilled(bidOrder, tradePrice);
+            bool askShouldClose = _isOrderFullyFilled(askOrder, tradePrice);
+
+            // 如果买单应该关闭但尚未精确成交完毕，发出事件并移除
+            if (bidShouldClose && bidOrder.filledAmount < bidOrder.amount) {
+                // 发出 OrderFilled 事件，本次成交量为0，标记为完全成交
+                emit OrderFilled(tradingPair, bidOrderId, 0, 0, true);
+                _removeFilledOrder(tradingPair, bidOrderId, false);
+            }
+
+            // 如果卖单应该关闭但尚未精确成交完毕，发出事件并移除
+            if (askShouldClose && askOrder.filledAmount < askOrder.amount) {
+                emit OrderFilled(tradingPair, askOrderId, 0, 0, true);
+                _removeFilledOrder(tradingPair, askOrderId, true);
+            }
+
             return false;
         }
 
@@ -1182,9 +1205,9 @@ contract OrderBook {
         // 计算 quote amount (用于事件)
         uint256 quoteAmount = (tradeAmount * tradePrice) / TradingConstants.PRICE_DECIMALS;
 
-        // 检查订单是否完全成交
-        bool bidFullyFilled = (bidOrder.filledAmount == bidOrder.amount);
-        bool askFullyFilled = (askOrder.filledAmount == askOrder.amount);
+        // 检查订单是否完全成交（使用灰尘阈值判断）
+        bool bidFullyFilled = _isOrderFullyFilled(bidOrder, tradePrice);
+        bool askFullyFilled = _isOrderFullyFilled(askOrder, tradePrice);
 
         // 先触发 OrderFilled 事件，再移除订单
         // 这确保事件顺序为: OrderFilled -> PriceLevelRemoved
@@ -1202,6 +1225,34 @@ contract OrderBook {
         }
 
         return true;
+    }
+
+    /**
+     * @dev 判断订单是否完全成交（使用灰尘阈值）
+     * 当剩余未成交部分的价值低于 DUST_THRESHOLD 时，视为完全成交
+     * @param order 订单
+     * @param tradePrice 成交价格
+     * @return 是否完全成交
+     */
+    function _isOrderFullyFilled(Order storage order, uint256 tradePrice) internal view returns (bool) {
+        // 精确相等时直接返回
+        if (order.filledAmount >= order.amount) {
+            return true;
+        }
+
+        // 计算剩余未成交部分的 quote value
+        uint256 remainingQuoteValue;
+        if (order.isMarketOrder && !order.isAsk) {
+            // 市价买单：amount 和 filledAmount 都是 quote tokens
+            remainingQuoteValue = order.amount - order.filledAmount;
+        } else {
+            // 限价买单、限价卖单、市价卖单：amount 和 filledAmount 都是 base tokens
+            uint256 remainingBase = order.amount - order.filledAmount;
+            remainingQuoteValue = (remainingBase * tradePrice) / TradingConstants.PRICE_DECIMALS;
+        }
+
+        // 如果剩余价值低于灰尘阈值，视为完全成交
+        return remainingQuoteValue < TradingConstants.DUST_THRESHOLD;
     }
 
     /**

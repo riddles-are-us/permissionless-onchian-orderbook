@@ -15,4 +15,8 @@ library TradingConstants {
     // 交易费率常数（千分之一 = 0.1%）
     uint256 public constant FEE_RATE = 1;
     uint256 public constant FEE_BASE = 1000;
+
+    // 灰尘阈值：剩余未成交价值低于此值时视为完全成交
+    // 0.01 USDC with AMOUNT_DECIMALS precision = 0.01 * 10^8 = 1000000
+    uint256 public constant DUST_THRESHOLD = 1000000;
 }

@@ -62,7 +62,10 @@ contract Sequencer {
     uint256 public queueTail;  // 队列尾部（最新的请求）
     uint256 public nextRequestId = 1;
 
-    // 存储已经在OrderBook中的订单ID（用于验证撤单请求）
+    // 订单是否在OrderBook中的状态追踪
+    // - 当订单被处理并插入OrderBook时设为 true
+    // - 当订单被撤销或完全成交后设为 false
+    // 用途：验证撤单请求时检查订单是否存在于OrderBook中
     mapping(uint256 => bool) public ordersInBook;
 
     // 常量表示空节点
@@ -326,11 +329,16 @@ contract Sequencer {
 
         QueuedRequest storage request = queuedRequests[requestId];
 
-        // 如果是下单请求，标记订单已在OrderBook中
-        // 优化：requestType 现在是 uint8，需要转换比较
+        // 更新 ordersInBook 状态追踪
+        // 注意：requestType 现在是 uint8，需要转换比较
         if (request.requestType == uint8(RequestType.PlaceOrder)) {
+            // 下单请求：订单已被插入OrderBook，标记为 true
             ordersInBook[requestId] = true;
             emit OrderInsertedToBook(requestId);
+        } else if (request.requestType == uint8(RequestType.RemoveOrder)) {
+            // 撤单请求：订单已从OrderBook移除，标记为 false
+            // 注意：撤单请求复用 price 字段存储 orderIdToRemove
+            ordersInBook[request.price] = false;
         }
 
         uint256 nextRequestId = request.nextRequestId;
