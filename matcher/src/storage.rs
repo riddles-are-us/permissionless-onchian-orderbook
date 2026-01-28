@@ -842,4 +842,83 @@ impl MongoStorage {
 
         Ok(collection.find_one(filter, options).await?)
     }
+
+    /// 统计指定时间范围内活跃的 matcher 数量
+    ///
+    /// 返回：(活跃 matcher 数量, 各 matcher 的统计信息, 总提交次数)
+    pub async fn get_active_matchers_stats(
+        &self,
+        hours: u64,
+    ) -> Result<(u64, Vec<MatcherStats>, u64)> {
+        use futures::stream::TryStreamExt;
+
+        let collection = self.batch_submissions_collection();
+
+        // 计算时间范围
+        let now = chrono::Utc::now();
+        let since = now - chrono::Duration::hours(hours as i64);
+        let since_bson = BsonDateTime::from_millis(since.timestamp_millis());
+
+        // 使用 aggregation pipeline 统计
+        let pipeline = vec![
+            // 1. 筛选时间范围内的记录
+            doc! {
+                "$match": {
+                    "submitted_at": { "$gte": since_bson }
+                }
+            },
+            // 2. 按 submitter 分组，统计每个 matcher 的提交次数和总奖励
+            doc! {
+                "$group": {
+                    "_id": "$submitter",
+                    "submission_count": { "$sum": 1 },
+                    "total_processed": { "$sum": "$processed_count" },
+                    "last_submission": { "$max": "$submitted_at" }
+                }
+            },
+            // 3. 按提交次数降序排列
+            doc! {
+                "$sort": { "submission_count": -1 }
+            }
+        ];
+
+        let mut cursor = collection.aggregate(pipeline, None).await?;
+        let mut matcher_stats: Vec<MatcherStats> = Vec::new();
+        let mut total_submissions: u64 = 0;
+
+        while let Some(doc) = cursor.try_next().await? {
+            let submitter = doc.get_str("_id").unwrap_or_default().to_string();
+            let submission_count = doc.get_i32("submission_count").unwrap_or(0) as u64;
+            let total_processed = doc.get_i64("total_processed").unwrap_or(0) as u64;
+            let last_submission = doc.get_datetime("last_submission")
+                .map(|dt| dt.try_to_rfc3339_string().unwrap_or_default())
+                .unwrap_or_default();
+
+            total_submissions += submission_count;
+
+            matcher_stats.push(MatcherStats {
+                submitter,
+                submission_count,
+                total_processed,
+                last_submission,
+            });
+        }
+
+        let active_count = matcher_stats.len() as u64;
+
+        Ok((active_count, matcher_stats, total_submissions))
+    }
+}
+
+/// Matcher 统计信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatcherStats {
+    /// Matcher 地址
+    pub submitter: String,
+    /// 提交次数
+    pub submission_count: u64,
+    /// 处理的请求总数
+    pub total_processed: u64,
+    /// 最后提交时间
+    pub last_submission: String,
 }

@@ -1,6 +1,6 @@
 use crate::config::ApiConfig;
 use crate::state::GlobalState;
-use crate::storage::{BatchSubmission, KlineInterval, MongoStorage, OrderStatus, StoredKline, StoredOrder};
+use crate::storage::{MatcherStats, MongoStorage, OrderStatus, StoredKline, StoredOrder};
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use ethers::types::U256;
@@ -64,6 +64,26 @@ pub struct BatchSubmissionQuery {
     pub submitter: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<u64>,
+}
+
+/// 活跃 Matcher 查询参数
+#[derive(Deserialize)]
+pub struct ActiveMatchersQuery {
+    /// 统计时间范围（小时），默认 24
+    pub hours: Option<u64>,
+}
+
+/// 活跃 Matcher 统计响应
+#[derive(Serialize)]
+pub struct ActiveMatchersResponse {
+    /// 活跃 matcher 数量
+    pub active_count: u64,
+    /// 统计时间范围（小时）
+    pub hours: u64,
+    /// 总提交次数
+    pub total_submissions: u64,
+    /// 各 matcher 的详细统计
+    pub matchers: Vec<MatcherStats>,
 }
 
 /// K线查询参数
@@ -519,6 +539,28 @@ async fn get_batch_submissions(
     }
 }
 
+/// 获取活跃 Matcher 统计
+/// GET /api/v1/stats/active-matchers?hours=24
+async fn get_active_matchers(
+    state: web::Data<Arc<ApiState>>,
+    query: web::Query<ActiveMatchersQuery>,
+) -> impl Responder {
+    let hours = query.hours.unwrap_or(24).min(168); // 最多统计 7 天
+
+    match state.storage.get_active_matchers_stats(hours).await {
+        Ok((active_count, matchers, total_submissions)) => {
+            let response = ActiveMatchersResponse {
+                active_count,
+                hours,
+                total_submissions,
+                matchers,
+            };
+            HttpResponse::Ok().json(ApiResponse::success(response))
+        }
+        Err(e) => HttpResponse::InternalServerError().json(ApiResponse::<()>::error(&e.to_string())),
+    }
+}
+
 /// 启动 API 服务器
 pub async fn start_api_server(config: ApiConfig, storage: MongoStorage, global_state: Option<GlobalState>) -> std::io::Result<()> {
     let state = Arc::new(ApiState { storage, global_state });
@@ -553,6 +595,8 @@ pub async fn start_api_server(config: ApiConfig, storage: MongoStorage, global_s
             .route("/api/v1/overview", web::get().to(get_system_overview))
             // 批量提交记录
             .route("/api/v1/batch-submissions", web::get().to(get_batch_submissions))
+            // 活跃 Matcher 统计
+            .route("/api/v1/stats/active-matchers", web::get().to(get_active_matchers))
             // 调试接口
             .route("/api/v1/debug/orderbook", web::get().to(get_debug_orderbook))
     })
