@@ -603,6 +603,7 @@ impl MongoStorage {
         &self,
         limit: i64,
         offset: u64,
+        pair_id: Option<&str>,
     ) -> Result<Vec<StoredTrade>> {
         let collection = self.trades_collection();
 
@@ -612,7 +613,13 @@ impl MongoStorage {
             .limit(limit)
             .build();
 
-        let mut cursor = collection.find(doc! {}, options).await?;
+        // Build filter based on pair_id
+        let filter = match pair_id {
+            Some(id) => doc! { "trading_pair": id },
+            None => doc! {},
+        };
+
+        let mut cursor = collection.find(filter, options).await?;
         let mut trades = Vec::new();
 
         while cursor.advance().await? {

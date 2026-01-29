@@ -50,6 +50,7 @@ pub struct OrderQuery {
 
 #[derive(Deserialize)]
 pub struct TradeQuery {
+    pub pair_id: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<u64>,
 }
@@ -303,8 +304,9 @@ async fn get_trades(
 ) -> impl Responder {
     let limit = query.limit.unwrap_or(50).min(100);
     let offset = query.offset.unwrap_or(0);
+    let pair_id = query.pair_id.as_deref();
 
-    match state.storage.get_trades(limit, offset).await {
+    match state.storage.get_trades(limit, offset, pair_id).await {
         Ok(trades) => HttpResponse::Ok().json(ApiResponse::success(trades)),
         Err(e) => HttpResponse::InternalServerError().json(ApiResponse::<()>::error(&e.to_string())),
     }
