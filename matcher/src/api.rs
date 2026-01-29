@@ -198,6 +198,35 @@ pub struct DebugOrderbookResponse {
     pub price_level_keys: Vec<String>,
 }
 
+/// 交易对信息响应
+#[derive(Serialize)]
+pub struct TradingPairInfo {
+    pub pair_id: String,
+    pub ask_levels: usize,
+    pub bid_levels: usize,
+    pub total_orders: usize,
+}
+
+/// 交易对列表响应
+#[derive(Serialize)]
+pub struct TradingPairsResponse {
+    pub pairs: Vec<TradingPairInfo>,
+    pub total_count: usize,
+}
+
+/// 单个交易对的概述响应
+#[derive(Serialize)]
+pub struct TradingPairOverviewResponse {
+    pub pair_id: String,
+    pub current_block: u64,
+    pub match_id: String,
+    pub pending_requests: Vec<OverviewRequest>,
+    pub pending_request_count: usize,
+    pub asks: Vec<OverviewPriceLevel>,
+    pub bids: Vec<OverviewPriceLevel>,
+    pub market_orders: MarketOrderStats,
+}
+
 /// 健康检查
 async fn health() -> impl Responder {
     HttpResponse::Ok().json(ApiResponse::success("OK"))
@@ -382,97 +411,103 @@ async fn get_system_overview(
         })
         .collect();
 
-    // 获取订单簿数据
-    let orderbook = global_state.orderbook.read();
+    // 获取订单簿数据（使用第一个交易对）
+    let supported_pairs = global_state.get_supported_pairs();
+    let first_pair = supported_pairs.first();
 
     // 获取 asks（最多10个价格层级）
     let mut asks = Vec::new();
-    let mut current_price = orderbook.ask_head;
-    let mut count = 0;
-    while !current_price.is_zero() && count < 10 {
-        let key = if true { current_price } else { current_price | (U256::one() << 255) };
-        if let Some(level) = orderbook.price_levels.get(&key) {
-            // 统计该价格层级的订单数量和剩余量
-            let mut order_count = 0;
-            let mut remaining_volume = U256::zero();
-            let mut order_id = level.head_order_id;
-            while !order_id.is_zero() {
-                order_count += 1;
-                if let Some(order) = orderbook.orders.get(&order_id) {
-                    remaining_volume += order.amount - order.filled_amount;
-                    order_id = order.next_order_id;
-                } else {
-                    break;
-                }
-            }
-            asks.push(OverviewPriceLevel {
-                price: level.price.to_string(),
-                total_volume: remaining_volume.to_string(),
-                order_count,
-            });
-            current_price = level.next_price;
-        } else {
-            break;
-        }
-        count += 1;
-    }
-
-    // 获取 bids（最多10个价格层级）
     let mut bids = Vec::new();
-    let mut current_price = orderbook.bid_head;
-    let mut count = 0;
-    while !current_price.is_zero() && count < 10 {
-        let key = current_price | (U256::one() << 255);
-        if let Some(level) = orderbook.price_levels.get(&key) {
-            // 统计该价格层级的订单数量和剩余量
-            let mut order_count = 0;
-            let mut remaining_volume = U256::zero();
-            let mut order_id = level.head_order_id;
-            while !order_id.is_zero() {
-                order_count += 1;
-                if let Some(order) = orderbook.orders.get(&order_id) {
-                    remaining_volume += order.amount - order.filled_amount;
-                    order_id = order.next_order_id;
-                } else {
-                    break;
-                }
-            }
-            bids.push(OverviewPriceLevel {
-                price: level.price.to_string(),
-                total_volume: remaining_volume.to_string(),
-                order_count,
-            });
-            current_price = level.next_price;
-        } else {
-            break;
-        }
-        count += 1;
-    }
-
-    // 统计市价单
     let mut total_buy_amount = U256::zero();
     let mut buy_order_count = 0;
-    let mut order_id = orderbook.market_bid_head;
-    while !order_id.is_zero() {
-        if let Some(order) = orderbook.orders.get(&order_id) {
-            total_buy_amount += order.amount - order.filled_amount;
-            buy_order_count += 1;
-            order_id = order.next_order_id;
-        } else {
-            break;
-        }
-    }
-
     let mut total_sell_amount = U256::zero();
     let mut sell_order_count = 0;
-    let mut order_id = orderbook.market_ask_head;
-    while !order_id.is_zero() {
-        if let Some(order) = orderbook.orders.get(&order_id) {
-            total_sell_amount += order.amount - order.filled_amount;
-            sell_order_count += 1;
-            order_id = order.next_order_id;
-        } else {
-            break;
+
+    if let Some(pair) = first_pair {
+        if let Some(orderbook) = global_state.get_orderbook(pair) {
+            let mut current_price = orderbook.ask_head;
+            let mut count = 0;
+            while !current_price.is_zero() && count < 10 {
+                let key = if true { current_price } else { current_price | (U256::one() << 255) };
+                if let Some(level) = orderbook.price_levels.get(&key) {
+                    // 统计该价格层级的订单数量和剩余量
+                    let mut order_count = 0;
+                    let mut remaining_volume = U256::zero();
+                    let mut order_id = level.head_order_id;
+                    while !order_id.is_zero() {
+                        order_count += 1;
+                        if let Some(order) = orderbook.orders.get(&order_id) {
+                            remaining_volume += order.amount - order.filled_amount;
+                            order_id = order.next_order_id;
+                        } else {
+                            break;
+                        }
+                    }
+                    asks.push(OverviewPriceLevel {
+                        price: level.price.to_string(),
+                        total_volume: remaining_volume.to_string(),
+                        order_count,
+                    });
+                    current_price = level.next_price;
+                } else {
+                    break;
+                }
+                count += 1;
+            }
+
+            // 获取 bids（最多10个价格层级）
+            let mut current_price = orderbook.bid_head;
+            let mut count = 0;
+            while !current_price.is_zero() && count < 10 {
+                let key = current_price | (U256::one() << 255);
+                if let Some(level) = orderbook.price_levels.get(&key) {
+                    // 统计该价格层级的订单数量和剩余量
+                    let mut order_count = 0;
+                    let mut remaining_volume = U256::zero();
+                    let mut order_id = level.head_order_id;
+                    while !order_id.is_zero() {
+                        order_count += 1;
+                        if let Some(order) = orderbook.orders.get(&order_id) {
+                            remaining_volume += order.amount - order.filled_amount;
+                            order_id = order.next_order_id;
+                        } else {
+                            break;
+                        }
+                    }
+                    bids.push(OverviewPriceLevel {
+                        price: level.price.to_string(),
+                        total_volume: remaining_volume.to_string(),
+                        order_count,
+                    });
+                    current_price = level.next_price;
+                } else {
+                    break;
+                }
+                count += 1;
+            }
+
+            // 统计市价单
+            let mut order_id = orderbook.market_bid_head;
+            while !order_id.is_zero() {
+                if let Some(order) = orderbook.orders.get(&order_id) {
+                    total_buy_amount += order.amount - order.filled_amount;
+                    buy_order_count += 1;
+                    order_id = order.next_order_id;
+                } else {
+                    break;
+                }
+            }
+
+            let mut order_id = orderbook.market_ask_head;
+            while !order_id.is_zero() {
+                if let Some(order) = orderbook.orders.get(&order_id) {
+                    total_sell_amount += order.amount - order.filled_amount;
+                    sell_order_count += 1;
+                    order_id = order.next_order_id;
+                } else {
+                    break;
+                }
+            }
         }
     }
 
@@ -504,22 +539,296 @@ async fn get_debug_orderbook(state: web::Data<Arc<ApiState>>) -> impl Responder 
         }
     };
 
-    let orderbook = global_state.orderbook.read();
+    // 使用第一个交易对
+    let supported_pairs = global_state.get_supported_pairs();
+    let first_pair = supported_pairs.first();
 
-    // 收集所有 price_level keys
-    let mut price_level_keys: Vec<String> = orderbook.price_levels.keys()
-        .map(|k| format!("{}", k))
+    let response = if let Some(pair) = first_pair {
+        if let Some(orderbook) = global_state.get_orderbook(pair) {
+            // 收集所有 price_level keys
+            let mut price_level_keys: Vec<String> = orderbook.price_levels.keys()
+                .map(|k| format!("{}", k))
+                .collect();
+            price_level_keys.sort();
+
+            DebugOrderbookResponse {
+                ask_head: orderbook.ask_head.to_string(),
+                ask_tail: orderbook.ask_tail.to_string(),
+                bid_head: orderbook.bid_head.to_string(),
+                bid_tail: orderbook.bid_tail.to_string(),
+                price_levels_count: orderbook.price_levels.len(),
+                orders_count: orderbook.orders.len(),
+                price_level_keys,
+            }
+        } else {
+            DebugOrderbookResponse {
+                ask_head: "0".to_string(),
+                ask_tail: "0".to_string(),
+                bid_head: "0".to_string(),
+                bid_tail: "0".to_string(),
+                price_levels_count: 0,
+                orders_count: 0,
+                price_level_keys: vec![],
+            }
+        }
+    } else {
+        DebugOrderbookResponse {
+            ask_head: "0".to_string(),
+            ask_tail: "0".to_string(),
+            bid_head: "0".to_string(),
+            bid_tail: "0".to_string(),
+            price_levels_count: 0,
+            orders_count: 0,
+            price_level_keys: vec![],
+        }
+    };
+
+    HttpResponse::Ok().json(ApiResponse::success(response))
+}
+
+/// 获取所有支持的交易对列表
+/// GET /api/v1/trading-pairs
+async fn get_trading_pairs(
+    state: web::Data<Arc<ApiState>>,
+) -> impl Responder {
+    let global_state = match &state.global_state {
+        Some(gs) => gs,
+        None => {
+            return HttpResponse::ServiceUnavailable()
+                .json(ApiResponse::<()>::error("GlobalState not available"));
+        }
+    };
+
+    let supported_pairs = global_state.get_supported_pairs();
+    let mut pairs: Vec<TradingPairInfo> = Vec::new();
+
+    for pair in &supported_pairs {
+        let pair_id = format!("0x{}", hex::encode(pair));
+        let (ask_levels, bid_levels, total_orders) = if let Some(orderbook) = global_state.get_orderbook(pair) {
+            // 计算 ask 价格层级数量
+            let mut ask_count = 0;
+            let mut current = orderbook.ask_head;
+            while !current.is_zero() {
+                ask_count += 1;
+                if let Some(level) = orderbook.price_levels.get(&current) {
+                    current = level.next_price;
+                } else {
+                    break;
+                }
+            }
+
+            // 计算 bid 价格层级数量
+            let mut bid_count = 0;
+            let mut current = orderbook.bid_head;
+            while !current.is_zero() {
+                bid_count += 1;
+                let key = current | (U256::one() << 255);
+                if let Some(level) = orderbook.price_levels.get(&key) {
+                    current = level.next_price;
+                } else {
+                    break;
+                }
+            }
+
+            (ask_count, bid_count, orderbook.orders.len())
+        } else {
+            (0, 0, 0)
+        };
+
+        pairs.push(TradingPairInfo {
+            pair_id,
+            ask_levels,
+            bid_levels,
+            total_orders,
+        });
+    }
+
+    let total_count = pairs.len();
+    HttpResponse::Ok().json(ApiResponse::success(TradingPairsResponse { pairs, total_count }))
+}
+
+/// 获取单个交易对的概述
+/// GET /api/v1/trading-pairs/{trading_pair}/overview
+async fn get_trading_pair_overview(
+    state: web::Data<Arc<ApiState>>,
+    path: web::Path<String>,
+) -> impl Responder {
+    let trading_pair_str = path.into_inner();
+    let global_state = match &state.global_state {
+        Some(gs) => gs,
+        None => {
+            return HttpResponse::ServiceUnavailable()
+                .json(ApiResponse::<()>::error("GlobalState not available"));
+        }
+    };
+
+    // 解析交易对 ID
+    let trading_pair: [u8; 32] = if trading_pair_str.starts_with("0x") {
+        match hex::decode(&trading_pair_str[2..]) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return HttpResponse::BadRequest()
+                    .json(ApiResponse::<()>::error("Invalid trading pair format"));
+            }
+        }
+    } else {
+        return HttpResponse::BadRequest()
+            .json(ApiResponse::<()>::error("Trading pair must start with 0x"));
+    };
+
+    // 检查交易对是否支持
+    if !global_state.is_pair_supported(&trading_pair) {
+        return HttpResponse::NotFound()
+            .json(ApiResponse::<()>::error("Trading pair not supported"));
+    }
+
+    // 获取当前区块和 matchId
+    let current_block = *global_state.current_block.read();
+    let match_id = global_state.get_match_id();
+
+    // 获取该交易对的待处理请求
+    let all_requests = global_state.get_head_requests(100);
+    let pair_requests: Vec<_> = all_requests
+        .iter()
+        .filter(|r| r.trading_pair == trading_pair)
+        .take(10)
         .collect();
-    price_level_keys.sort();
 
-    let response = DebugOrderbookResponse {
-        ask_head: orderbook.ask_head.to_string(),
-        ask_tail: orderbook.ask_tail.to_string(),
-        bid_head: orderbook.bid_head.to_string(),
-        bid_tail: orderbook.bid_tail.to_string(),
-        price_levels_count: orderbook.price_levels.len(),
-        orders_count: orderbook.orders.len(),
-        price_level_keys,
+    let pending_request_count = all_requests
+        .iter()
+        .filter(|r| r.trading_pair == trading_pair)
+        .count();
+
+    let pending_requests: Vec<OverviewRequest> = pair_requests
+        .iter()
+        .map(|r| OverviewRequest {
+            request_id: r.request_id.to_string(),
+            request_type: match r.request_type {
+                crate::types::RequestType::PlaceOrder => "PlaceOrder".to_string(),
+                crate::types::RequestType::RemoveOrder => "RemoveOrder".to_string(),
+            },
+            trader: format!("{:?}", r.trader).to_lowercase(),
+            order_type: match r.order_type {
+                crate::types::OrderType::Limit => "Limit".to_string(),
+                crate::types::OrderType::Market => "Market".to_string(),
+            },
+            is_ask: r.is_ask,
+            price: r.price.to_string(),
+            amount: r.amount.to_string(),
+        })
+        .collect();
+
+    // 获取订单簿数据
+    let mut asks = Vec::new();
+    let mut bids = Vec::new();
+    let mut total_buy_amount = U256::zero();
+    let mut buy_order_count = 0;
+    let mut total_sell_amount = U256::zero();
+    let mut sell_order_count = 0;
+
+    if let Some(orderbook) = global_state.get_orderbook(&trading_pair) {
+        // 获取 asks（最多10个价格层级）
+        let mut current_price = orderbook.ask_head;
+        let mut count = 0;
+        while !current_price.is_zero() && count < 10 {
+            let key = current_price;
+            if let Some(level) = orderbook.price_levels.get(&key) {
+                let mut order_count = 0;
+                let mut remaining_volume = U256::zero();
+                let mut order_id = level.head_order_id;
+                while !order_id.is_zero() {
+                    order_count += 1;
+                    if let Some(order) = orderbook.orders.get(&order_id) {
+                        remaining_volume += order.amount - order.filled_amount;
+                        order_id = order.next_order_id;
+                    } else {
+                        break;
+                    }
+                }
+                asks.push(OverviewPriceLevel {
+                    price: level.price.to_string(),
+                    total_volume: remaining_volume.to_string(),
+                    order_count,
+                });
+                current_price = level.next_price;
+            } else {
+                break;
+            }
+            count += 1;
+        }
+
+        // 获取 bids（最多10个价格层级）
+        let mut current_price = orderbook.bid_head;
+        let mut count = 0;
+        while !current_price.is_zero() && count < 10 {
+            let key = current_price | (U256::one() << 255);
+            if let Some(level) = orderbook.price_levels.get(&key) {
+                let mut order_count = 0;
+                let mut remaining_volume = U256::zero();
+                let mut order_id = level.head_order_id;
+                while !order_id.is_zero() {
+                    order_count += 1;
+                    if let Some(order) = orderbook.orders.get(&order_id) {
+                        remaining_volume += order.amount - order.filled_amount;
+                        order_id = order.next_order_id;
+                    } else {
+                        break;
+                    }
+                }
+                bids.push(OverviewPriceLevel {
+                    price: level.price.to_string(),
+                    total_volume: remaining_volume.to_string(),
+                    order_count,
+                });
+                current_price = level.next_price;
+            } else {
+                break;
+            }
+            count += 1;
+        }
+
+        // 统计市价单
+        let mut order_id = orderbook.market_bid_head;
+        while !order_id.is_zero() {
+            if let Some(order) = orderbook.orders.get(&order_id) {
+                total_buy_amount += order.amount - order.filled_amount;
+                buy_order_count += 1;
+                order_id = order.next_order_id;
+            } else {
+                break;
+            }
+        }
+
+        let mut order_id = orderbook.market_ask_head;
+        while !order_id.is_zero() {
+            if let Some(order) = orderbook.orders.get(&order_id) {
+                total_sell_amount += order.amount - order.filled_amount;
+                sell_order_count += 1;
+                order_id = order.next_order_id;
+            } else {
+                break;
+            }
+        }
+    }
+
+    let response = TradingPairOverviewResponse {
+        pair_id: trading_pair_str,
+        current_block,
+        match_id: match_id.to_string(),
+        pending_requests,
+        pending_request_count,
+        asks,
+        bids,
+        market_orders: MarketOrderStats {
+            total_buy_amount: total_buy_amount.to_string(),
+            total_sell_amount: total_sell_amount.to_string(),
+            buy_order_count,
+            sell_order_count,
+        },
     };
 
     HttpResponse::Ok().json(ApiResponse::success(response))
@@ -587,6 +896,9 @@ pub async fn start_api_server(config: ApiConfig, storage: MongoStorage, global_s
             // 用户订单相关
             .route("/api/v1/users/{trader}/orders", web::get().to(get_user_orders))
             .route("/api/v1/users/{trader}/orders/active", web::get().to(get_user_active_orders))
+            // 交易对相关
+            .route("/api/v1/trading-pairs", web::get().to(get_trading_pairs))
+            .route("/api/v1/trading-pairs/{trading_pair}/overview", web::get().to(get_trading_pair_overview))
             // 订单簿
             .route("/api/v1/orderbook/{trading_pair}", web::get().to(get_orderbook))
             // K线数据

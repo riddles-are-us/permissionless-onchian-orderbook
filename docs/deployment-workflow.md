@@ -160,6 +160,8 @@ forge build --force
 
 ### 2. 部署到 Sepolia
 
+**重要：Deploy.s.sol 现在会同时部署 ETH/USDC 和 BTC/USDC 两个交易对。**
+
 ```bash
 forge script script/Deploy.s.sol:DeployScript \
   --rpc-url https://ethereum-sepolia-rpc.publicnode.com \
@@ -168,6 +170,27 @@ forge script script/Deploy.s.sol:DeployScript \
   -vvv
 ```
 
+部署脚本会自动：
+1. 部署 WETH (18 位小数)
+2. 部署 WBTC (8 位小数，与真实 Bitcoin 一致)
+3. 部署 USDC (6 位小数)
+4. 部署 Account、OrderBook、Sequencer 合约
+5. 配置合约间的关联
+6. 注册 WETH/USDC 交易对 (pairId: `keccak256("WETH/USDC")`)
+7. 注册 WBTC/USDC 交易对 (wbtcPairId: `keccak256("WBTC/USDC")`)
+
+**注意**：如果只需要单独部署 WBTC（例如在已有部署上添加），可以使用：
+
+```bash
+forge script script/DeployWBTC.s.sol:DeployWBTCScript \
+  --rpc-url https://ethereum-sepolia-rpc.publicnode.com \
+  --broadcast \
+  --legacy \
+  -vvv
+```
+
+部署前需要更新 `DeployWBTC.s.sol` 中的 `ACCOUNT` 和 `USDC` 地址。
+
 ### 3. 记录部署信息
 
 部署脚本会自动生成 `deployments.json`：
@@ -175,11 +198,13 @@ forge script script/Deploy.s.sol:DeployScript \
 ```json
 {
   "weth": "0x...",
+  "wbtc": "0x...",
   "usdc": "0x...",
   "account": "0x...",
   "orderbook": "0x...",
   "sequencer": "0x...",
   "pairId": "0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816",
+  "wbtcPairId": "0xc4a4e865aa0aa1da3eb8811d14d304839f3002161a919075a08340898d445010",
   "deployer": "0x...",
   "deploymentBlock": 10105369
 }
@@ -403,15 +428,15 @@ sudo systemctl start mongod
 
 - [ ] 合并最新 bugfix 代码
 - [ ] 编译合约成功
-- [ ] 部署合约到 Sepolia
-- [ ] 记录新的合约地址和部署区块
-- [ ] 更新前端 config.ts
+- [ ] 部署合约到 Sepolia (Deploy.s.sol 会同时部署 ETH/USDC 和 BTC/USDC)
+- [ ] 验证 deployments.json 包含 wbtc 和 wbtcPairId
+- [ ] 更新前端 config.ts（包括 WBTC 地址和 BTC/USDC 交易对）
 - [ ] 提交并推送前端更新
-- [ ] 更新服务器 matcher config.toml
+- [ ] 更新服务器 matcher config.toml（添加 BTC/USDC 交易对配置）
 - [ ] 重新编译 matcher
 - [ ] 重启 matcher
 - [ ] 验证 matcher API 正常
-- [ ] 验证前端功能正常
+- [ ] 验证前端功能正常（ETH/USDC 和 BTC/USDC 交易对）
 
 ---
 
@@ -419,5 +444,6 @@ sudo systemctl start mongod
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-01-29 | v0.0.7 | 添加 WBTC/USDC 交易对部署流程，更新部署检查清单 |
 | 2026-01-23 | v0.0.6 | Bugfix: ordersInBook 状态追踪、isAsk 字段、灰尘阈值处理 |
 | 2026-01-21 | v0.0.5 | 初始 Sepolia 部署 |

@@ -22,6 +22,9 @@ contract DeployScript is Script {
         address weth = address(new MockERC20("Wrapped Ether", "WETH", 18));
         console.log("WETH deployed at:", weth);
 
+        address wbtc = address(new MockERC20("Wrapped Bitcoin", "WBTC", 8));
+        console.log("WBTC deployed at:", wbtc);
+
         address usdc = address(new MockERC20("USD Coin", "USDC", 6));
         console.log("USDC deployed at:", usdc);
 
@@ -60,11 +63,15 @@ contract DeployScript is Script {
         Sequencer(sequencer).setOrderBook(orderbook);
         console.log("Sequencer.setOrderBook() called");
 
-        // 6. Register trading pair
-        console.log("\n=== Registering Trading Pair ===");
+        // 6. Register trading pairs
+        console.log("\n=== Registering Trading Pairs ===");
         bytes32 pairId = keccak256("WETH/USDC");
         AccountContract(account).registerTradingPair(pairId, weth, usdc);
         console.log("Trading pair WETH/USDC registered");
+
+        bytes32 wbtcPairId = keccak256("WBTC/USDC");
+        AccountContract(account).registerTradingPair(wbtcPairId, wbtc, usdc);
+        console.log("Trading pair WBTC/USDC registered");
 
         vm.stopBroadcast();
 
@@ -73,22 +80,26 @@ contract DeployScript is Script {
 
         console.log("\n=== Deployment Summary ===");
         console.log("WETH:     ", weth);
+        console.log("WBTC:     ", wbtc);
         console.log("USDC:     ", usdc);
         console.log("Account:  ", account);
         console.log("OrderBook:", orderbook);
         console.log("Sequencer:", sequencer);
-        console.log("Pair ID:  ", vm.toString(pairId));
+        console.log("ETH/USDC Pair ID:", vm.toString(pairId));
+        console.log("BTC/USDC Pair ID:", vm.toString(wbtcPairId));
         console.log("Block:    ", deploymentBlock);
 
         // Save to file for matcher to use
         string memory json = string.concat(
             '{\n',
             '  "weth": "', vm.toString(weth), '",\n',
+            '  "wbtc": "', vm.toString(wbtc), '",\n',
             '  "usdc": "', vm.toString(usdc), '",\n',
             '  "account": "', vm.toString(account), '",\n',
             '  "orderbook": "', vm.toString(orderbook), '",\n',
             '  "sequencer": "', vm.toString(sequencer), '",\n',
             '  "pairId": "', vm.toString(pairId), '",\n',
+            '  "wbtcPairId": "', vm.toString(wbtcPairId), '",\n',
             '  "deployer": "', vm.toString(deployer), '",\n',
             '  "deploymentBlock": ', vm.toString(deploymentBlock), '\n',
             '}'

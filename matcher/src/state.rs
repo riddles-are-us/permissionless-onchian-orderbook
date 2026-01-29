@@ -2,6 +2,7 @@ use crate::orderbook_simulator::OrderBookSimulator;
 use crate::types::*;
 use dashmap::DashMap;
 use ethers::types::U256;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -15,8 +16,12 @@ pub struct GlobalState {
     /// Sequencer 队列头部
     pub queue_head: Arc<parking_lot::RwLock<U256>>,
 
-    /// OrderBook 模拟器（使用链表结构，与链上一致）
-    pub orderbook: Arc<parking_lot::RwLock<OrderBookSimulator>>,
+    /// 每个交易对的 OrderBook 模拟器
+    /// trading_pair -> OrderBookSimulator
+    pub orderbooks: Arc<DashMap<[u8; 32], OrderBookSimulator>>,
+
+    /// 支持的交易对集合（用于快速过滤）
+    pub supported_pairs: Arc<parking_lot::RwLock<HashSet<[u8; 32]>>>,
 
     /// 当前同步到的区块高度
     pub current_block: Arc<parking_lot::RwLock<u64>>,
@@ -33,11 +38,27 @@ impl GlobalState {
         Self {
             queued_requests: Arc::new(DashMap::new()),
             queue_head: Arc::new(parking_lot::RwLock::new(U256::zero())),
-            orderbook: Arc::new(parking_lot::RwLock::new(OrderBookSimulator::new())),
+            orderbooks: Arc::new(DashMap::new()),
+            supported_pairs: Arc::new(parking_lot::RwLock::new(HashSet::new())),
             current_block: Arc::new(parking_lot::RwLock::new(0)),
             match_id: Arc::new(parking_lot::RwLock::new(U256::zero())),
             sync_completed: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// 初始化支持的交易对
+    pub fn init_trading_pairs(&self, pairs: Vec<[u8; 32]>) {
+        let mut supported = self.supported_pairs.write();
+        for pair in pairs {
+            supported.insert(pair);
+            // 为每个交易对创建独立的 OrderBookSimulator
+            self.orderbooks.insert(pair, OrderBookSimulator::new());
+        }
+    }
+
+    /// 检查交易对是否被支持
+    pub fn is_pair_supported(&self, pair: &[u8; 32]) -> bool {
+        self.supported_pairs.read().contains(pair)
     }
 
     /// 标记历史同步已完成
@@ -50,23 +71,23 @@ impl GlobalState {
         self.sync_completed.load(Ordering::SeqCst)
     }
 
-    /// 获取队列中的前 N 个请求
+    /// 获取队列中的前 N 个请求（只返回支持的交易对的请求）
     pub fn get_head_requests(&self, n: usize) -> Vec<QueuedRequest> {
         let mut result = Vec::new();
         let head = *self.queue_head.read();
+        let supported = self.supported_pairs.read();
 
         if head.is_zero() {
             return result;
         }
 
         let mut current = head;
-        for _ in 0..n {
-            if current.is_zero() {
-                break;
-            }
-
+        while result.len() < n && !current.is_zero() {
             if let Some(request) = self.queued_requests.get(&current) {
-                result.push(request.clone());
+                // 只返回支持的交易对的请求
+                if supported.contains(&request.trading_pair) {
+                    result.push(request.clone());
+                }
                 current = request.next_request_id;
             } else {
                 break;
@@ -131,9 +152,19 @@ impl GlobalState {
         *self.current_block.write() = block;
     }
 
-    /// 克隆当前订单簿状态（用于模拟计算）
-    pub fn clone_orderbook(&self) -> OrderBookSimulator {
-        self.orderbook.read().clone()
+    /// 获取指定交易对的订单簿模拟器（克隆）
+    pub fn clone_orderbook(&self, trading_pair: &[u8; 32]) -> Option<OrderBookSimulator> {
+        self.orderbooks.get(trading_pair).map(|ob| ob.clone())
+    }
+
+    /// 获取指定交易对的订单簿模拟器的可写引用
+    pub fn get_orderbook_mut(&self, trading_pair: &[u8; 32]) -> Option<dashmap::mapref::one::RefMut<'_, [u8; 32], OrderBookSimulator>> {
+        self.orderbooks.get_mut(trading_pair)
+    }
+
+    /// 获取指定交易对的订单簿模拟器的只读引用
+    pub fn get_orderbook(&self, trading_pair: &[u8; 32]) -> Option<dashmap::mapref::one::Ref<'_, [u8; 32], OrderBookSimulator>> {
+        self.orderbooks.get(trading_pair)
     }
 
     /// 获取当前 matchId
@@ -146,9 +177,35 @@ impl GlobalState {
         *self.match_id.write() = new_match_id;
     }
 
-    /// 检查是否有可撮合的订单
+    /// 检查是否有可撮合的订单（检查所有支持的交易对）
     /// 返回 (has_matchable_limit_orders, has_matchable_market_orders)
     pub fn has_matchable_orders(&self) -> (bool, bool) {
-        self.orderbook.read().has_matchable_orders()
+        let mut has_limit = false;
+        let mut has_market = false;
+
+        for entry in self.orderbooks.iter() {
+            let (limit, market) = entry.value().has_matchable_orders();
+            has_limit = has_limit || limit;
+            has_market = has_market || market;
+            if has_limit && has_market {
+                break;
+            }
+        }
+
+        (has_limit, has_market)
+    }
+
+    /// 检查指定交易对是否有可撮合的订单
+    pub fn has_matchable_orders_for_pair(&self, trading_pair: &[u8; 32]) -> (bool, bool) {
+        if let Some(orderbook) = self.orderbooks.get(trading_pair) {
+            orderbook.has_matchable_orders()
+        } else {
+            (false, false)
+        }
+    }
+
+    /// 获取所有支持的交易对
+    pub fn get_supported_pairs(&self) -> Vec<[u8; 32]> {
+        self.supported_pairs.read().iter().cloned().collect()
     }
 }

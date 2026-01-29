@@ -4,6 +4,7 @@ use crate::state::GlobalState;
 use crate::types::*;
 use anyhow::{Context, Result};
 use ethers::prelude::*;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -12,7 +13,6 @@ pub struct MatchingEngine {
     config: Config,
     state: GlobalState,
     orderbook: OrderBook<SignerMiddleware<Arc<Provider<Ws>>, LocalWallet>>,
-    trading_pair: [u8; 32],
 }
 
 impl MatchingEngine {
@@ -37,25 +37,13 @@ impl MatchingEngine {
         let orderbook_addr: Address = config.contracts.orderbook.parse()?;
         let orderbook = OrderBook::new(orderbook_addr, Arc::new(client));
 
-        // 解析 trading_pair
-        let trading_pair_str = &config.contracts.trading_pair;
-        let trading_pair = if trading_pair_str.starts_with("0x") {
-            let bytes = hex::decode(&trading_pair_str[2..])
-                .context("Failed to decode trading_pair hex")?;
-            let mut arr = [0u8; 32];
-            if bytes.len() == 32 {
-                arr.copy_from_slice(&bytes);
-            }
-            arr
-        } else {
-            [0u8; 32]
-        };
+        // 交易对将在 sync 完成后从 GlobalState 获取
+        // 不再在这里检查，因为自动发现是在 sync 阶段执行的
 
         Ok(Self {
             config,
             state,
             orderbook,
-            trading_pair,
         })
     }
 
@@ -73,6 +61,18 @@ impl MatchingEngine {
         while !self.state.is_sync_completed() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+
+        // 从 GlobalState 获取交易对（在 sync 完成后）
+        let trading_pairs = self.state.get_supported_pairs();
+        if trading_pairs.is_empty() {
+            return Err(anyhow::anyhow!("No trading pairs discovered or configured"));
+        }
+
+        info!("🎯 Discovered {} trading pairs:", trading_pairs.len());
+        for (i, pair) in trading_pairs.iter().enumerate() {
+            info!("   [{}] 0x{}", i, hex::encode(pair));
+        }
+
         info!("✅ Historical sync completed, starting to process requests");
 
         let interval = Duration::from_millis(self.config.matching.matching_interval_ms);
@@ -109,50 +109,55 @@ impl MatchingEngine {
         Ok(true)
     }
 
-    /// 尝试调用 matchAll() 继续撮合未完成的订单
+    /// 尝试调用 matchAll() 继续撮合未完成的订单（对所有交易对）
     async fn try_match_all(&self) -> Result<()> {
-        // 检查是否有可撮合的订单
-        let (has_limit, has_market) = self.state.has_matchable_orders();
-
-        if !has_limit && !has_market {
-            return Ok(());
-        }
-
-        info!(
-            "🔄 Found matchable orders (limit={}, market={}), calling matchAll...",
-            has_limit, has_market
-        );
-
-        // 调用 matchAll，使用配置中的 max_iterations
         let max_iterations = U256::from(self.config.matching.max_iterations);
-        let tx = self
-            .orderbook
-            .match_all(self.trading_pair, max_iterations)
-            .gas_price(self.config.executor.gas_price_gwei * 1_000_000_000)
-            .gas(self.config.executor.gas_limit);
+        let trading_pairs = self.state.get_supported_pairs();
 
-        let pending_tx = tx.send().await.context("Failed to send matchAll transaction")?;
-        let tx_hash = pending_tx.tx_hash();
+        for trading_pair in &trading_pairs {
+            // 检查该交易对是否有可撮合的订单
+            let (has_limit, has_market) = self.state.has_matchable_orders_for_pair(trading_pair);
 
-        info!("📝 matchAll transaction sent: {:?}", tx_hash);
+            if !has_limit && !has_market {
+                continue;
+            }
 
-        match pending_tx.await {
-            Ok(Some(receipt)) => {
-                if receipt.status == Some(1.into()) {
-                    info!(
-                        "✅ matchAll confirmed: {:?}, {} events emitted",
-                        tx_hash,
-                        receipt.logs.len()
-                    );
-                } else {
-                    warn!("❌ matchAll transaction failed: {:?}", tx_hash);
+            info!(
+                "🔄 Found matchable orders for pair 0x{} (limit={}, market={}), calling matchAll...",
+                hex::encode(&trading_pair[..8]),
+                has_limit, has_market
+            );
+
+            // 调用 matchAll
+            let tx = self
+                .orderbook
+                .match_all(*trading_pair, max_iterations)
+                .gas_price(self.config.executor.gas_price_gwei * 1_000_000_000)
+                .gas(self.config.executor.gas_limit);
+
+            let pending_tx = tx.send().await.context("Failed to send matchAll transaction")?;
+            let tx_hash = pending_tx.tx_hash();
+
+            info!("📝 matchAll transaction sent: {:?}", tx_hash);
+
+            match pending_tx.await {
+                Ok(Some(receipt)) => {
+                    if receipt.status == Some(1.into()) {
+                        info!(
+                            "✅ matchAll confirmed: {:?}, {} events emitted",
+                            tx_hash,
+                            receipt.logs.len()
+                        );
+                    } else {
+                        warn!("❌ matchAll transaction failed: {:?}", tx_hash);
+                    }
                 }
-            }
-            Ok(None) => {
-                warn!("❌ matchAll transaction dropped: {:?}", tx_hash);
-            }
-            Err(e) => {
-                warn!("❌ Error waiting for matchAll transaction: {}", e);
+                Ok(None) => {
+                    warn!("❌ matchAll transaction dropped: {:?}", tx_hash);
+                }
+                Err(e) => {
+                    warn!("❌ Error waiting for matchAll transaction: {}", e);
+                }
             }
         }
 
@@ -207,25 +212,45 @@ impl MatchingEngine {
 
     /// 使用 Simulator 计算插入位置（严格按照链上逻辑）
     /// Simulator 从 GlobalState 获取当前订单簿状态，不再从链上同步
+    /// 支持多交易对：每个交易对使用独立的 Simulator
     fn calculate_insert_positions_with_simulator(
         &self,
         requests: &[QueuedRequest],
     ) -> Result<MatchResult> {
         let mut result = MatchResult::new();
 
-        // 从 GlobalState 克隆当前 orderbook 状态
-        let mut sim = self.state.clone_orderbook();
-
-        debug!(
-            "📊 Simulator state: ask_head={}, bid_head={}, {} price_levels, {} orders",
-            sim.ask_head,
-            sim.bid_head,
-            sim.price_levels.len(),
-            sim.orders.len()
-        );
+        // 为每个交易对克隆独立的 simulator
+        let mut simulators: HashMap<[u8; 32], crate::orderbook_simulator::OrderBookSimulator> = HashMap::new();
+        for request in requests {
+            if !simulators.contains_key(&request.trading_pair) {
+                if let Some(sim) = self.state.clone_orderbook(&request.trading_pair) {
+                    debug!(
+                        "📊 Simulator for pair 0x{}: ask_head={}, bid_head={}, {} price_levels, {} orders",
+                        hex::encode(&request.trading_pair[..8]),
+                        sim.ask_head,
+                        sim.bid_head,
+                        sim.price_levels.len(),
+                        sim.orders.len()
+                    );
+                    simulators.insert(request.trading_pair, sim);
+                } else {
+                    warn!(
+                        "⚠️ No orderbook simulator for pair 0x{}, skipping request {}",
+                        hex::encode(&request.trading_pair[..8]),
+                        request.request_id
+                    );
+                    continue;
+                }
+            }
+        }
 
         // 对每个请求，模拟执行并获取必要参数
         for request in requests {
+            let sim = match simulators.get_mut(&request.trading_pair) {
+                Some(s) => s,
+                None => continue, // 跳过没有 simulator 的交易对
+            };
+
             match request.request_type {
                 RequestType::RemoveOrder => {
                     // 模拟移除订单，更新本地状态
