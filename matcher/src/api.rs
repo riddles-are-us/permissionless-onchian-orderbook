@@ -202,6 +202,13 @@ pub struct DebugOrderbookResponse {
 #[derive(Serialize)]
 pub struct TradingPairInfo {
     pub pair_id: String,
+    pub ticker: Option<String>,
+    pub base_token: Option<String>,
+    pub quote_token: Option<String>,
+    pub base_symbol: Option<String>,
+    pub quote_symbol: Option<String>,
+    pub base_decimals: Option<u8>,
+    pub quote_decimals: Option<u8>,
     pub ask_levels: usize,
     pub bid_levels: usize,
     pub total_orders: usize,
@@ -218,6 +225,11 @@ pub struct TradingPairsResponse {
 #[derive(Serialize)]
 pub struct TradingPairOverviewResponse {
     pub pair_id: String,
+    pub ticker: Option<String>,
+    pub base_token: Option<String>,
+    pub quote_token: Option<String>,
+    pub base_decimals: Option<u8>,
+    pub quote_decimals: Option<u8>,
     pub current_block: u64,
     pub match_id: String,
     pub pending_requests: Vec<OverviewRequest>,
@@ -604,6 +616,10 @@ async fn get_trading_pairs(
 
     for pair in &supported_pairs {
         let pair_id = format!("0x{}", hex::encode(pair));
+
+        // 获取元数据
+        let metadata = global_state.get_pair_metadata(pair);
+
         let (ask_levels, bid_levels, total_orders) = if let Some(orderbook) = global_state.get_orderbook(pair) {
             // 计算 ask 价格层级数量
             let mut ask_count = 0;
@@ -637,6 +653,13 @@ async fn get_trading_pairs(
 
         pairs.push(TradingPairInfo {
             pair_id,
+            ticker: metadata.as_ref().map(|m| m.ticker.clone()),
+            base_token: metadata.as_ref().map(|m| format!("{:?}", m.base_token)),
+            quote_token: metadata.as_ref().map(|m| format!("{:?}", m.quote_token)),
+            base_symbol: metadata.as_ref().map(|m| m.base_symbol.clone()),
+            quote_symbol: metadata.as_ref().map(|m| m.quote_symbol.clone()),
+            base_decimals: metadata.as_ref().map(|m| m.base_decimals),
+            quote_decimals: metadata.as_ref().map(|m| m.quote_decimals),
             ask_levels,
             bid_levels,
             total_orders,
@@ -815,8 +838,16 @@ async fn get_trading_pair_overview(
         }
     }
 
+    // 获取元数据
+    let metadata = global_state.get_pair_metadata(&trading_pair);
+
     let response = TradingPairOverviewResponse {
         pair_id: trading_pair_str,
+        ticker: metadata.as_ref().map(|m| m.ticker.clone()),
+        base_token: metadata.as_ref().map(|m| format!("{:?}", m.base_token)),
+        quote_token: metadata.as_ref().map(|m| format!("{:?}", m.quote_token)),
+        base_decimals: metadata.as_ref().map(|m| m.base_decimals),
+        quote_decimals: metadata.as_ref().map(|m| m.quote_decimals),
         current_block,
         match_id: match_id.to_string(),
         pending_requests,

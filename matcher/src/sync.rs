@@ -1,9 +1,9 @@
 use crate::config::Config;
-use crate::contracts::{Account, OrderBook, Sequencer};
+use crate::contracts::{Account, ERC20, OrderBook, Sequencer};
 use crate::contracts::order_book::OrderBookEvents;
 use crate::contracts::sequencer::SequencerEvents;
 use crate::orderbook_simulator::{SimOrder, SimPriceLevel};
-use crate::state::GlobalState;
+use crate::state::{GlobalState, TradingPairMetadata};
 use crate::storage::{MongoStorage, OrderStatus, StoredOrder, StoredOrderType, StoredTrade, BatchSubmission};
 use crate::types::*;
 use anyhow::{Context, Result};
@@ -270,17 +270,58 @@ impl StateSynchronizer {
 
         let mut pairs: Vec<[u8; 32]> = Vec::new();
         for event in events {
+            // 读取代币 symbol 和 decimals
+            let (base_symbol, base_decimals) = self.get_token_info(event.base_token).await
+                .unwrap_or_else(|_| ("???".to_string(), 18));
+            let (quote_symbol, quote_decimals) = self.get_token_info(event.quote_token).await
+                .unwrap_or_else(|_| ("???".to_string(), 6));
+
+            let ticker = format!("{}/{}", base_symbol, quote_symbol);
+
             info!(
-                "  📋 Found trading pair: 0x{}, baseToken={:?}, quoteToken={:?}",
-                hex::encode(event.trading_pair),
-                event.base_token,
-                event.quote_token
+                "  📋 Found trading pair: {} (0x{})",
+                ticker,
+                hex::encode(&event.trading_pair[..8])
             );
+            info!(
+                "      baseToken={:?} ({}, {} decimals)",
+                event.base_token, base_symbol, base_decimals
+            );
+            info!(
+                "      quoteToken={:?} ({}, {} decimals)",
+                event.quote_token, quote_symbol, quote_decimals
+            );
+
+            // 存储元数据
+            let metadata = TradingPairMetadata {
+                pair_id: event.trading_pair,
+                base_token: event.base_token,
+                quote_token: event.quote_token,
+                base_symbol,
+                quote_symbol,
+                base_decimals,
+                quote_decimals,
+                ticker,
+            };
+            self.state.add_pair_metadata(metadata);
+
             pairs.push(event.trading_pair);
         }
 
         info!("  ✅ Discovered {} trading pairs from chain", pairs.len());
         Ok(pairs)
+    }
+
+    /// 获取 ERC20 代币的 symbol 和 decimals
+    async fn get_token_info(&self, token_address: Address) -> Result<(String, u8)> {
+        let token = ERC20::new(token_address, self.provider.clone());
+
+        let symbol = token.symbol().call().await
+            .unwrap_or_else(|_| "???".to_string());
+        let decimals = token.decimals().call().await
+            .unwrap_or(18);
+
+        Ok((symbol, decimals))
     }
 
     /// 同步 OrderBook 状态到 GlobalState（支持多交易对）
@@ -294,6 +335,10 @@ impl StateSynchronizer {
         if trading_pairs.is_empty() {
             info!("📡 No trading pairs configured, auto-discovering from chain...");
             trading_pairs = self.discover_trading_pairs().await?;
+        } else {
+            // 从配置读取的交易对，也需要获取元数据
+            info!("📡 Loading metadata for {} configured trading pairs...", trading_pairs.len());
+            self.load_trading_pair_metadata(&trading_pairs).await?;
         }
 
         if trading_pairs.is_empty() {
@@ -306,10 +351,62 @@ impl StateSynchronizer {
 
         // 同步每个交易对的订单簿
         for trading_pair in &trading_pairs {
-            info!("📊 Syncing orderbook for pair 0x{}...", hex::encode(&trading_pair[..8]));
+            // 获取 ticker 用于日志
+            let ticker = self.state.get_pair_metadata(trading_pair)
+                .map(|m| m.ticker)
+                .unwrap_or_else(|| format!("0x{}", hex::encode(&trading_pair[..8])));
+            info!("📊 Syncing orderbook for pair {}...", ticker);
             self.sync_trading_pair_orderbook(trading_pair).await?;
         }
 
+        Ok(())
+    }
+
+    /// 为配置的交易对加载元数据（从 Account 合约读取）
+    async fn load_trading_pair_metadata(&self, trading_pairs: &[[u8; 32]]) -> Result<()> {
+        for pair_id in trading_pairs {
+            // 从 Account 合约读取交易对信息
+            let pair_info = self.account.trading_pairs(*pair_id).call().await;
+
+            match pair_info {
+                Ok((base_token, quote_token, _is_active)) => {
+                    if base_token == Address::zero() {
+                        warn!("  ⚠️ Trading pair 0x{} not registered in Account contract", hex::encode(&pair_id[..8]));
+                        continue;
+                    }
+
+                    // 读取代币 symbol 和 decimals
+                    let (base_symbol, base_decimals) = self.get_token_info(base_token).await
+                        .unwrap_or_else(|_| ("???".to_string(), 18));
+                    let (quote_symbol, quote_decimals) = self.get_token_info(quote_token).await
+                        .unwrap_or_else(|_| ("???".to_string(), 6));
+
+                    let ticker = format!("{}/{}", base_symbol, quote_symbol);
+
+                    info!(
+                        "  📋 Loaded metadata for pair: {} (0x{})",
+                        ticker,
+                        hex::encode(&pair_id[..8])
+                    );
+
+                    // 存储元数据
+                    let metadata = TradingPairMetadata {
+                        pair_id: *pair_id,
+                        base_token,
+                        quote_token,
+                        base_symbol,
+                        quote_symbol,
+                        base_decimals,
+                        quote_decimals,
+                        ticker,
+                    };
+                    self.state.add_pair_metadata(metadata);
+                }
+                Err(e) => {
+                    warn!("  ⚠️ Failed to load metadata for pair 0x{}: {}", hex::encode(&pair_id[..8]), e);
+                }
+            }
+        }
         Ok(())
     }
 

@@ -1,10 +1,23 @@
 use crate::orderbook_simulator::OrderBookSimulator;
 use crate::types::*;
 use dashmap::DashMap;
-use ethers::types::U256;
+use ethers::types::{Address, U256};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// 交易对元数据
+#[derive(Clone, Debug)]
+pub struct TradingPairMetadata {
+    pub pair_id: [u8; 32],
+    pub base_token: Address,
+    pub quote_token: Address,
+    pub base_symbol: String,
+    pub quote_symbol: String,
+    pub base_decimals: u8,
+    pub quote_decimals: u8,
+    pub ticker: String,  // e.g., "ETH/USDC"
+}
 
 /// 全局状态（线程安全）
 #[derive(Clone)]
@@ -23,6 +36,10 @@ pub struct GlobalState {
     /// 支持的交易对集合（用于快速过滤）
     pub supported_pairs: Arc<parking_lot::RwLock<HashSet<[u8; 32]>>>,
 
+    /// 交易对元数据
+    /// trading_pair -> TradingPairMetadata
+    pub pair_metadata: Arc<DashMap<[u8; 32], TradingPairMetadata>>,
+
     /// 当前同步到的区块高度
     pub current_block: Arc<parking_lot::RwLock<u64>>,
 
@@ -40,6 +57,7 @@ impl GlobalState {
             queue_head: Arc::new(parking_lot::RwLock::new(U256::zero())),
             orderbooks: Arc::new(DashMap::new()),
             supported_pairs: Arc::new(parking_lot::RwLock::new(HashSet::new())),
+            pair_metadata: Arc::new(DashMap::new()),
             current_block: Arc::new(parking_lot::RwLock::new(0)),
             match_id: Arc::new(parking_lot::RwLock::new(U256::zero())),
             sync_completed: Arc::new(AtomicBool::new(false)),
@@ -54,6 +72,22 @@ impl GlobalState {
             // 为每个交易对创建独立的 OrderBookSimulator
             self.orderbooks.insert(pair, OrderBookSimulator::new());
         }
+    }
+
+    /// 添加交易对元数据
+    pub fn add_pair_metadata(&self, metadata: TradingPairMetadata) {
+        let pair_id = metadata.pair_id;
+        self.pair_metadata.insert(pair_id, metadata);
+    }
+
+    /// 获取交易对元数据
+    pub fn get_pair_metadata(&self, pair_id: &[u8; 32]) -> Option<TradingPairMetadata> {
+        self.pair_metadata.get(pair_id).map(|m| m.clone())
+    }
+
+    /// 获取所有交易对元数据
+    pub fn get_all_pair_metadata(&self) -> Vec<TradingPairMetadata> {
+        self.pair_metadata.iter().map(|entry| entry.value().clone()).collect()
     }
 
     /// 检查交易对是否被支持
