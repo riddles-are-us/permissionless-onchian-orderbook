@@ -30,6 +30,7 @@
 - 事件处理自动根据 `trading_pair` 字段路由到正确的 orderbook
 - 配置文件支持 `trading_pairs` 数组
 - 向后兼容单个 `trading_pair` 配置
+- **自动读取代币 symbol 和 decimals**（从 ERC20 合约）
 
 ---
 
@@ -205,12 +206,26 @@ curl http://<SERVER_IP>:<PORT>/api/v1/trading-pairs
     "pairs": [
       {
         "pair_id": "0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816",
+        "ticker": "WETH/USDC",
+        "base_token": "0x51f42ee29aa544cfd34fc8077536701fcb1cf2ba",
+        "quote_token": "0x092c283edef672cc791a5dbfb6badc4406a75c48",
+        "base_symbol": "WETH",
+        "quote_symbol": "USDC",
+        "base_decimals": 18,
+        "quote_decimals": 6,
         "ask_levels": 5,
         "bid_levels": 3,
         "total_orders": 12
       },
       {
         "pair_id": "0xc4a4e865aa0aa1da3eb8811d14d304839f3002161a919075a08340898d445010",
+        "ticker": "WBTC/USDC",
+        "base_token": "0xda41b4d98cbdca4ca36b91309cdf2d2ecdd35d15",
+        "quote_token": "0x092c283edef672cc791a5dbfb6badc4406a75c48",
+        "base_symbol": "WBTC",
+        "quote_symbol": "USDC",
+        "base_decimals": 8,
+        "quote_decimals": 6,
         "ask_levels": 2,
         "bid_levels": 4,
         "total_orders": 8
@@ -226,6 +241,33 @@ curl http://<SERVER_IP>:<PORT>/api/v1/trading-pairs
 ```bash
 # 获取特定交易对的详细概述
 curl http://<SERVER_IP>:<PORT>/api/v1/trading-pairs/<PAIR_ID>/overview
+```
+
+响应示例：
+```json
+{
+  "success": true,
+  "data": {
+    "pair_id": "0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816",
+    "ticker": "WETH/USDC",
+    "base_token": "0x51f42ee29aa544cfd34fc8077536701fcb1cf2ba",
+    "quote_token": "0x092c283edef672cc791a5dbfb6badc4406a75c48",
+    "base_decimals": 18,
+    "quote_decimals": 6,
+    "current_block": 10147954,
+    "match_id": "262",
+    "pending_requests": [],
+    "pending_request_count": 0,
+    "asks": [],
+    "bids": [],
+    "market_orders": {
+      "total_buy_amount": "0",
+      "total_sell_amount": "0",
+      "buy_order_count": 0,
+      "sell_order_count": 0
+    }
+  }
+}
 ```
 
 ---
@@ -334,6 +376,20 @@ A: **是的！** Matcher 已更新为支持多交易对模式。单个 Matcher �
 
 A: **不需要！** Matcher 现在支持自动发现交易对。如果不配置 `trading_pairs`，Matcher 会自动从 Account 合约的 `TradingPairRegistered` 事件中发现所有已注册的交易对。
 
+### Q: Matcher 如何知道交易对的 ticker 名称？
+
+A: **自动读取！** Matcher 会：
+1. 从 Account 合约读取交易对的 `baseToken` 和 `quoteToken` 地址
+2. 调用 ERC20 合约的 `symbol()` 和 `decimals()` 方法获取代币信息
+3. 自动组合成 ticker（如 "WETH/USDC"）
+
+日志示例：
+```
+📡 Loading metadata for 2 configured trading pairs...
+  📋 Loaded metadata for pair: WETH/USDC (0xe3fd74b5016b57bf)
+  📋 Loaded metadata for pair: WBTC/USDC (0xc4a4e865aa0aa1da)
+```
+
 ### Q: 多个交易对的数据如何区分？
 
 A:
@@ -363,6 +419,7 @@ A: 建议：
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-01-29 | v1.3 | 自动读取代币 symbol/decimals，API 返回完整 ticker 信息 |
 | 2026-01-29 | v1.2 | 自动发现交易对、新增交易对 API 端点 |
 | 2026-01-29 | v1.1 | Matcher 支持多交易对模式 |
 | 2026-01-29 | v1.0 | 初始版本 |
