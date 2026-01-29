@@ -854,17 +854,17 @@ impl MongoStorage {
 
         let collection = self.batch_submissions_collection();
 
-        // 计算时间范围
+        // 计算时间范围 - 使用 ISO 8601 字符串格式（因为 submitted_at 存储为字符串）
         let now = chrono::Utc::now();
         let since = now - chrono::Duration::hours(hours as i64);
-        let since_bson = BsonDateTime::from_millis(since.timestamp_millis());
+        let since_str = since.format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
         // 使用 aggregation pipeline 统计
         let pipeline = vec![
-            // 1. 筛选时间范围内的记录
+            // 1. 筛选时间范围内的记录（使用字符串比较）
             doc! {
                 "$match": {
-                    "submitted_at": { "$gte": since_bson }
+                    "submitted_at": { "$gte": &since_str }
                 }
             },
             // 2. 按 submitter 分组，统计每个 matcher 的提交次数和总奖励
@@ -890,9 +890,9 @@ impl MongoStorage {
             let submitter = doc.get_str("_id").unwrap_or_default().to_string();
             let submission_count = doc.get_i32("submission_count").unwrap_or(0) as u64;
             let total_processed = doc.get_i64("total_processed").unwrap_or(0) as u64;
-            let last_submission = doc.get_datetime("last_submission")
-                .map(|dt| dt.try_to_rfc3339_string().unwrap_or_default())
-                .unwrap_or_default();
+            let last_submission = doc.get_str("last_submission")
+                .unwrap_or_default()
+                .to_string();
 
             total_submissions += submission_count;
 
