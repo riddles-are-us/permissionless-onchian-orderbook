@@ -544,12 +544,16 @@ impl MongoStorage {
         status: Option<OrderStatus>,
         limit: i64,
         offset: u64,
+        pair_id: Option<&str>,
     ) -> Result<Vec<StoredOrder>> {
         let collection = self.orders_collection();
 
         let mut filter = doc! { "trader": trader.to_lowercase() };
         if let Some(s) = status {
             filter.insert("status", mongodb::bson::to_bson(&s)?);
+        }
+        if let Some(pid) = pair_id {
+            filter.insert("trading_pair", pid.to_lowercase());
         }
 
         let options = mongodb::options::FindOptions::builder()

@@ -46,6 +46,7 @@ pub struct OrderQuery {
     pub status: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<u64>,
+    pub pair_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -254,6 +255,7 @@ async fn get_user_orders(
     let trader = path.into_inner();
     let limit = query.limit.unwrap_or(50).min(100);
     let offset = query.offset.unwrap_or(0);
+    let pair_id = query.pair_id.as_deref();
 
     let status = query.status.as_ref().and_then(|s| match s.to_lowercase().as_str() {
         "pending" => Some(OrderStatus::Pending),
@@ -264,7 +266,7 @@ async fn get_user_orders(
         _ => None,
     });
 
-    match state.storage.get_orders_by_trader(&trader, status, limit, offset).await {
+    match state.storage.get_orders_by_trader(&trader, status, limit, offset, pair_id).await {
         Ok(orders) => HttpResponse::Ok().json(ApiResponse::success(orders)),
         Err(e) => HttpResponse::InternalServerError().json(ApiResponse::<()>::error(&e.to_string())),
     }
