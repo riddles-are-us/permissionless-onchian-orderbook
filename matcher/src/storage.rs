@@ -937,6 +937,152 @@ impl MongoStorage {
 
         Ok((active_count, matcher_stats, total_submissions))
     }
+
+    /// 获取交易对的统计信息
+    ///
+    /// 包括：流动性（挂单总价值）、24h交易量、24h独立交易者数、24h交易笔数
+    pub async fn get_trading_pair_stats(&self, pair_id: &str) -> Result<TradingPairStats> {
+        use futures::stream::TryStreamExt;
+
+        // 1. 计算流动性：统计 Active 和 PartiallyFilled 状态订单的总价值
+        let orders_collection = self.orders_collection();
+        let liquidity_pipeline = vec![
+            // 筛选该交易对的活跃订单
+            doc! {
+                "$match": {
+                    "trading_pair": pair_id,
+                    "status": { "$in": ["active", "partiallyfilled"] }
+                }
+            },
+            // 计算每个订单的剩余价值 (price * (amount - filled_amount))
+            doc! {
+                "$project": {
+                    "price": { "$toDecimal": "$price" },
+                    "remaining": {
+                        "$subtract": [
+                            { "$toDecimal": "$amount" },
+                            { "$toDecimal": "$filled_amount" }
+                        ]
+                    }
+                }
+            },
+            // 计算价值并汇总
+            doc! {
+                "$group": {
+                    "_id": null,
+                    "total_value": {
+                        "$sum": {
+                            "$multiply": ["$price", "$remaining"]
+                        }
+                    }
+                }
+            }
+        ];
+
+        let mut liquidity_cursor = orders_collection.aggregate(liquidity_pipeline, None).await?;
+        let liquidity = if let Some(doc) = liquidity_cursor.try_next().await? {
+            // 从 Decimal128 获取值
+            if let Ok(decimal) = doc.get_document("total_value") {
+                decimal.to_string()
+            } else if let Some(bson_val) = doc.get("total_value") {
+                match bson_val {
+                    mongodb::bson::Bson::Decimal128(d) => d.to_string(),
+                    mongodb::bson::Bson::Double(d) => (*d as u128).to_string(),
+                    mongodb::bson::Bson::Int64(i) => (*i as u128).to_string(),
+                    mongodb::bson::Bson::Int32(i) => (*i as u128).to_string(),
+                    _ => "0".to_string(),
+                }
+            } else {
+                "0".to_string()
+            }
+        } else {
+            "0".to_string()
+        };
+
+        // 2. 计算 24h 统计：交易量、交易者数、交易笔数
+        let trades_collection = self.trades_collection();
+        let now = chrono::Utc::now();
+        let since_24h = now - chrono::Duration::hours(24);
+        let since_str = since_24h.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+        let trades_pipeline = vec![
+            // 筛选该交易对 24h 内的交易
+            doc! {
+                "$match": {
+                    "trading_pair": pair_id,
+                    "traded_at": { "$gte": &since_str }
+                }
+            },
+            // 计算统计数据
+            doc! {
+                "$group": {
+                    "_id": null,
+                    "trade_count": { "$sum": 1 },
+                    // 计算交易量 (price * amount)
+                    "volumes": {
+                        "$push": {
+                            "$multiply": [
+                                { "$toDecimal": "$price" },
+                                { "$toDecimal": "$amount" }
+                            ]
+                        }
+                    },
+                    // 收集所有交易者
+                    "buyers": { "$addToSet": "$buyer" },
+                    "sellers": { "$addToSet": "$seller" }
+                }
+            }
+        ];
+
+        let mut trades_cursor = trades_collection.aggregate(trades_pipeline, None).await?;
+        let (volume_24h, traders_24h, trades_24h) = if let Some(doc) = trades_cursor.try_next().await? {
+            let trade_count = doc.get_i32("trade_count").unwrap_or(0) as u64;
+
+            // 计算总交易量
+            let total_volume = if let Ok(volumes) = doc.get_array("volumes") {
+                let mut sum: f64 = 0.0;
+                for v in volumes {
+                    if let mongodb::bson::Bson::Decimal128(d) = v {
+                        if let Ok(val) = d.to_string().parse::<f64>() {
+                            sum += val;
+                        }
+                    }
+                }
+                (sum as u128).to_string()
+            } else {
+                "0".to_string()
+            };
+
+            // 计算独立交易者数量 (buyers + sellers 的并集)
+            let mut unique_traders = std::collections::HashSet::new();
+            if let Ok(buyers) = doc.get_array("buyers") {
+                for b in buyers {
+                    if let Some(addr) = b.as_str() {
+                        unique_traders.insert(addr.to_string());
+                    }
+                }
+            }
+            if let Ok(sellers) = doc.get_array("sellers") {
+                for s in sellers {
+                    if let Some(addr) = s.as_str() {
+                        unique_traders.insert(addr.to_string());
+                    }
+                }
+            }
+
+            (total_volume, unique_traders.len() as u64, trade_count)
+        } else {
+            ("0".to_string(), 0, 0)
+        };
+
+        Ok(TradingPairStats {
+            pair_id: pair_id.to_string(),
+            liquidity,
+            volume_24h,
+            traders_24h,
+            trades_24h,
+        })
+    }
 }
 
 /// Matcher 统计信息
@@ -952,4 +1098,19 @@ pub struct MatcherStats {
     pub total_fees: String,
     /// 最后提交时间
     pub last_submission: String,
+}
+
+/// 交易对统计信息
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TradingPairStats {
+    /// 交易对 ID
+    pub pair_id: String,
+    /// 流动性 (挂单总价值，quote token)
+    pub liquidity: String,
+    /// 24h 交易量 (quote token)
+    pub volume_24h: String,
+    /// 24h 独立交易者数量
+    pub traders_24h: u64,
+    /// 24h 交易笔数
+    pub trades_24h: u64,
 }

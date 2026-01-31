@@ -241,6 +241,14 @@ pub struct TradingPairOverviewResponse {
     pub asks: Vec<OverviewPriceLevel>,
     pub bids: Vec<OverviewPriceLevel>,
     pub market_orders: MarketOrderStats,
+    /// 流动性 (挂单总价值，quote token)
+    pub liquidity: String,
+    /// 24h 交易量 (quote token)
+    pub volume_24h: String,
+    /// 24h 独立交易者数量
+    pub traders_24h: u64,
+    /// 24h 交易笔数
+    pub trades_24h: u64,
 }
 
 /// 健康检查
@@ -847,6 +855,9 @@ async fn get_trading_pair_overview(
     // 获取元数据
     let metadata = global_state.get_pair_metadata(&trading_pair);
 
+    // 获取统计数据 (liquidity, volume_24h, traders_24h, trades_24h)
+    let stats = state.storage.get_trading_pair_stats(&trading_pair_str).await.unwrap_or_default();
+
     let response = TradingPairOverviewResponse {
         pair_id: trading_pair_str,
         ticker: metadata.as_ref().map(|m| m.ticker.clone()),
@@ -866,6 +877,10 @@ async fn get_trading_pair_overview(
             buy_order_count,
             sell_order_count,
         },
+        liquidity: stats.liquidity,
+        volume_24h: stats.volume_24h,
+        traders_24h: stats.traders_24h,
+        trades_24h: stats.trades_24h,
     };
 
     HttpResponse::Ok().json(ApiResponse::success(response))
