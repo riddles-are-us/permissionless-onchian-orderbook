@@ -884,7 +884,9 @@ impl MongoStorage {
                     "_id": "$submitter",
                     "submission_count": { "$sum": 1 },
                     "total_processed": { "$sum": "$processed_count" },
-                    "last_submission": { "$max": "$submitted_at" }
+                    "last_submission": { "$max": "$submitted_at" },
+                    // 收集所有 submitter_reward 用于后续累加
+                    "rewards": { "$push": "$submitter_reward" }
                 }
             },
             // 3. 按提交次数降序排列
@@ -905,12 +907,28 @@ impl MongoStorage {
                 .unwrap_or_default()
                 .to_string();
 
+            // 累加手续费（rewards 是字符串数组）
+            let total_fees = if let Ok(rewards) = doc.get_array("rewards") {
+                let mut sum: u128 = 0;
+                for reward in rewards {
+                    if let Some(reward_str) = reward.as_str() {
+                        if let Ok(val) = reward_str.parse::<u128>() {
+                            sum += val;
+                        }
+                    }
+                }
+                sum.to_string()
+            } else {
+                "0".to_string()
+            };
+
             total_submissions += submission_count;
 
             matcher_stats.push(MatcherStats {
                 submitter,
                 submission_count,
                 total_processed,
+                total_fees,
                 last_submission,
             });
         }
@@ -930,6 +948,8 @@ pub struct MatcherStats {
     pub submission_count: u64,
     /// 处理的请求总数
     pub total_processed: u64,
+    /// 累计手续费 (quote token, 如 USDC)
+    pub total_fees: String,
     /// 最后提交时间
     pub last_submission: String,
 }

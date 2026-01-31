@@ -84,6 +84,8 @@ pub struct ActiveMatchersResponse {
     pub hours: u64,
     /// 总提交次数
     pub total_submissions: u64,
+    /// 总手续费 (所有 matcher 累计)
+    pub total_fees: String,
     /// 各 matcher 的详细统计
     pub matchers: Vec<MatcherStats>,
 }
@@ -893,10 +895,16 @@ async fn get_active_matchers(
 
     match state.storage.get_active_matchers_stats(hours).await {
         Ok((active_count, matchers, total_submissions)) => {
+            // 计算所有 matcher 的总手续费
+            let total_fees: u128 = matchers.iter()
+                .filter_map(|m| m.total_fees.parse::<u128>().ok())
+                .sum();
+
             let response = ActiveMatchersResponse {
                 active_count,
                 hours,
                 total_submissions,
+                total_fees: total_fees.to_string(),
                 matchers,
             };
             HttpResponse::Ok().json(ApiResponse::success(response))
