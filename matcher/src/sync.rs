@@ -429,6 +429,27 @@ impl StateSynchronizer {
         let from_block = self.config.sync.start_block;
         info!("📜 Syncing historical events from block {} to {}", from_block, to_block);
 
+        // 获取当前区块时间戳，用于估算历史区块时间
+        // Sepolia 平均出块时间约 12 秒
+        let current_block_data = self.provider.get_block(to_block).await?;
+        let current_timestamp = current_block_data
+            .map(|b| b.timestamp.as_u64())
+            .unwrap_or_else(|| std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs());
+        const BLOCK_TIME_SECS: u64 = 12; // Sepolia average block time
+
+        // 辅助函数：根据区块号估算时间戳
+        let estimate_timestamp = |block_number: u64| -> u64 {
+            if block_number >= to_block {
+                current_timestamp
+            } else {
+                let blocks_diff = to_block - block_number;
+                current_timestamp.saturating_sub(blocks_diff * BLOCK_TIME_SECS)
+            }
+        };
+
         // 定义统一的事件枚举，用于排序
         #[derive(Debug)]
         enum HistoricalEvent {
@@ -562,6 +583,11 @@ impl StateSynchronizer {
                         None
                     };
 
+                    // 使用区块号估算时间戳，而不是当前时间
+                    let estimated_timestamp_secs = estimate_timestamp(block_number);
+                    let timestamp_ms = (estimated_timestamp_secs * 1000) as i64;
+                    let estimated_time = BsonDateTime::from_millis(timestamp_ms);
+
                     let stored_order = StoredOrder {
                         order_id: place_order.request_id.to_string(),
                         trading_pair: format!("0x{}", hex::encode(place_order.trading_pair)),
@@ -572,8 +598,8 @@ impl StateSynchronizer {
                         amount: place_order.amount.to_string(),
                         filled_amount: "0".to_string(),
                         status: OrderStatus::Pending,
-                        created_at: BsonDateTime::now(),
-                        updated_at: BsonDateTime::now(),
+                        created_at: estimated_time,
+                        updated_at: estimated_time,
                         block_number,
                         tx_hash: None,
                         chain_created_at,
@@ -590,10 +616,11 @@ impl StateSynchronizer {
                     let trading_pair_hex = format!("0x{}", hex::encode(trade.trading_pair));
                     let price_str = trade.price.to_string();
                     let amount_str = trade.amount.to_string();
-                    let timestamp_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64;
+
+                    // 使用区块号估算时间戳
+                    let estimated_timestamp_secs = estimate_timestamp(block_number);
+                    let timestamp_ms = (estimated_timestamp_secs * 1000) as i64;
+                    let traded_at = BsonDateTime::from_millis(timestamp_ms);
 
                     let stored_trade = StoredTrade {
                         trade_id: format!(
@@ -609,7 +636,7 @@ impl StateSynchronizer {
                         seller: format!("{:?}", trade.seller).to_lowercase(),
                         price: price_str.clone(),
                         amount: amount_str.clone(),
-                        traded_at: BsonDateTime::now(),
+                        traded_at,
                         block_number,
                         tx_hash: None,
                     };
@@ -668,12 +695,16 @@ impl StateSynchronizer {
                 }
 
                 HistoricalEvent::BatchProcessed(batch, block_number, _, tx_hash) => {
+                    // 使用区块号估算时间戳
+                    let estimated_timestamp_secs = estimate_timestamp(block_number);
+                    let submitted_at = BsonDateTime::from_millis((estimated_timestamp_secs * 1000) as i64);
+
                     let submission = BatchSubmission {
                         match_id: batch.match_id.to_string(),
                         submitter: format!("{:?}", batch.submitter).to_lowercase(),
                         processed_count: batch.processed_count.as_u64(),
                         submitter_reward: batch.total_fees.to_string(),
-                        submitted_at: BsonDateTime::now(),
+                        submitted_at,
                         block_number,
                         tx_hash: format!("{:?}", tx_hash),
                     };
@@ -815,6 +846,9 @@ impl StateSynchronizer {
                     None
                 };
 
+                // 使用链上时间戳，而不是当前时间
+                let chain_time = BsonDateTime::from_millis((chain_created_at * 1000) as i64);
+
                 let stored_order = StoredOrder {
                     order_id: current_order_id.to_string(),
                     trading_pair: format!("0x{}", hex::encode(trading_pair)),
@@ -829,8 +863,8 @@ impl StateSynchronizer {
                     amount: sim_order.amount.to_string(),
                     filled_amount: sim_order.filled_amount.to_string(),
                     status,
-                    created_at: BsonDateTime::now(),
-                    updated_at: BsonDateTime::now(),
+                    created_at: chain_time,
+                    updated_at: chain_time,
                     block_number: self.synced_block,
                     tx_hash: None,
                     chain_created_at,
