@@ -64,16 +64,4 @@ interface IAccount {
         uint256 amount,
         uint256 orderId
     ) external;
-
-    /**
-     * @notice 提取协议费用
-     * @param token 代币地址
-     * @param recipient 接收地址
-     * @param amount 数量
-     */
-    function withdrawProtocolFees(
-        address token,
-        address recipient,
-        uint256 amount
-    ) external;
 }

@@ -67,11 +67,6 @@ contract OrderBook {
     // matcher可以用这个值来检测是否有未同步的事件
     uint256 public matchId;
 
-    // 协议收益
-    mapping(address => uint256) public protocolFees;  // token => accumulated fees
-    address public protocolFeeRecipient;  // 协议费用接收地址
-    address public owner;  // 合约所有者
-
     // 事件
     event OrderInserted(bytes32 indexed tradingPair, uint256 indexed orderId, bool isAsk, uint256 price, uint256 amount);
     event OrderRemoved(bytes32 indexed tradingPair, uint256 indexed orderId);
@@ -92,27 +87,7 @@ contract OrderBook {
     );
     event OrderFilled(bytes32 indexed tradingPair, uint256 indexed orderId, uint256 quoteAmount, uint256 baseAmount, bool isFullyFilled);
     event BatchProcessed(address indexed submitter, uint256 indexed matchId, uint256 processedCount, uint256 totalFees);
-    event ProtocolFeeCollected(address indexed token, uint256 amount);
-    event ProtocolFeeWithdrawn(address indexed token, address indexed recipient, uint256 amount);
-    event ProtocolFeeRecipientSet(address indexed recipient);
-    event OwnerSet(address indexed owner);
-
-    // 修饰器
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner can call this");
-        _;
-    }
-
-    /**
-     * @notice 设置合约所有者（只能设置一次）
-     * @param _owner 所有者地址
-     */
-    function setOwner(address _owner) external {
-        require(owner == address(0), "Owner already set");
-        require(_owner != address(0), "Invalid owner address");
-        owner = _owner;
-        emit OwnerSet(_owner);
-    }
+    event DustCollected(address indexed token, uint256 amount, uint256 indexed orderId);
 
     /**
      * @notice 设置Sequencer合约地址
@@ -134,33 +109,6 @@ contract OrderBook {
         require(_account != address(0), "Invalid account address");
         account = IAccount(_account);
         emit AccountSet(_account);
-    }
-
-    /**
-     * @notice 设置协议费用接收地址
-     * @param _recipient 接收地址
-     */
-    function setProtocolFeeRecipient(address _recipient) external onlyOwner {
-        require(_recipient != address(0), "Invalid recipient address");
-        protocolFeeRecipient = _recipient;
-        emit ProtocolFeeRecipientSet(_recipient);
-    }
-
-    /**
-     * @notice 提取协议费用
-     * @param token 代币地址
-     */
-    function withdrawProtocolFees(address token) external onlyOwner {
-        require(protocolFeeRecipient != address(0), "Protocol fee recipient not set");
-        uint256 amount = protocolFees[token];
-        require(amount > 0, "No fees to withdraw");
-
-        protocolFees[token] = 0;
-
-        // 从Account合约转移资金到协议费用接收地址
-        account.withdrawProtocolFees(token, protocolFeeRecipient, amount);
-
-        emit ProtocolFeeWithdrawn(token, protocolFeeRecipient, amount);
     }
 
     /**
@@ -1370,7 +1318,7 @@ contract OrderBook {
             }
 
             if (feeAmount > 0) {
-                // 解锁资金并转给协议
+                // 解锁资金并转给协议（直接累积到 Account 的 collectedFees）
                 account.collectDustToProtocol(
                     order.trader,
                     tradingPair,
@@ -1380,9 +1328,7 @@ contract OrderBook {
                     orderId
                 );
 
-                // 累计协议费用
-                protocolFees[feeToken] += feeAmount;
-                emit ProtocolFeeCollected(feeToken, feeAmount);
+                emit DustCollected(feeToken, feeAmount, orderId);
             }
         }
 
