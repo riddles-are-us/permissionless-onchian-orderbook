@@ -122,12 +122,17 @@ impl OrderBookSimulator {
     /// 返回 (insert_after_price, insert_after_order)
     /// - insert_after_price: 价格层级插入位置
     /// - insert_after_order: 该价格层级当前的 tailOrderId（用于 FIFO）
+    ///
+    /// 参数:
+    /// - global_tail_order_id: 可选的全局 tail_order_id，用于跨 trading pair 共享 priceLevels 的场景
+    ///   如果提供，将优先使用此值作为 insert_after_order
     pub fn simulate_insert_order(
         &mut self,
         order_id: U256,
         price: U256,
         amount: U256,
         is_ask: bool,
+        global_tail_order_id: Option<U256>,
     ) -> (U256, U256) {
         // 1. 计算 insertAfterPrice（在当前状态下）
         let insert_after_price = self.find_insert_position(price, is_ask);
@@ -141,11 +146,24 @@ impl OrderBookSimulator {
         self.find_or_create_price_level(price, is_ask, insert_after_price);
 
         // 3. 获取当前价格层级的 tailOrderId（FIFO：新订单必须插入到尾部）
+        // 优先使用全局 tail_order_id（如果提供），否则使用本地 orderbook 的 tail_order_id
         let level_key = Self::get_price_level_key(price, is_ask);
-        let insert_after_order = if let Some(level) = self.price_levels.get(&level_key) {
+        let local_tail = if let Some(level) = self.price_levels.get(&level_key) {
             level.tail_order_id
         } else {
             EMPTY
+        };
+
+        // 使用全局 tail_order_id（如果提供且非零），否则使用本地 tail
+        let insert_after_order = match global_tail_order_id {
+            Some(global_tail) if !global_tail.is_zero() => {
+                debug!(
+                    "Order {} using global tail_order_id={} (local={})",
+                    order_id, global_tail, local_tail
+                );
+                global_tail
+            }
+            _ => local_tail,
         };
 
         debug!(
@@ -1157,6 +1175,7 @@ mod tests {
             TEST_PRICE,
             amount,
             false, // bid
+            None,  // global_tail_order_id
         );
 
         assert_eq!(insert_after.0, U256::zero()); // 空订单簿，插入头部（检查 insert_after_price_level）
@@ -1174,6 +1193,7 @@ mod tests {
             U256::from(100),
             U256::from(10),
             false,
+            None,
         );
         assert_eq!(insert1.0, U256::zero()); // 检查 insert_after_price_level
 
@@ -1183,6 +1203,7 @@ mod tests {
             U256::from(90),
             U256::from(10),
             false,
+            None,
         );
         assert_eq!(insert2.0, U256::from(100)); // 插入到100之后（检查 insert_after_price_level）
 
@@ -1192,6 +1213,7 @@ mod tests {
             U256::from(110),
             U256::from(10),
             false,
+            None,
         );
         assert_eq!(insert3.0, U256::zero()); // 插入到头部（检查 insert_after_price_level）
 
@@ -1213,6 +1235,7 @@ mod tests {
             U256::from(100),
             U256::from(10),
             true, // ask
+            None,
         );
         assert_eq!(insert1.0, U256::zero()); // 检查 insert_after_price_level
 
@@ -1222,6 +1245,7 @@ mod tests {
             U256::from(110),
             U256::from(10),
             true,
+            None,
         );
         assert_eq!(insert2.0, U256::from(100)); // 插入到100之后（检查 insert_after_price_level）
 
@@ -1231,6 +1255,7 @@ mod tests {
             U256::from(90),
             U256::from(10),
             true,
+            None,
         );
         assert_eq!(insert3.0, U256::zero()); // 插入到头部（检查 insert_after_price_level）
 
@@ -1256,6 +1281,7 @@ mod tests {
             TEST_PRICE,
             amount_10,
             false,
+            None,
         );
 
         // 插入一个卖单: price=TEST_PRICE, amount=5 units (应该匹配)
@@ -1264,6 +1290,7 @@ mod tests {
             TEST_PRICE,
             amount_5,
             true,
+            None,
         );
 
         // 卖单完全成交，不应该在订单簿中
@@ -1286,6 +1313,7 @@ mod tests {
             TEST_PRICE,
             amount_10,
             false,
+            None,
         );
 
         // 插入卖单: price=TEST_PRICE, amount=10 units (完全匹配)
@@ -1294,6 +1322,7 @@ mod tests {
             TEST_PRICE,
             amount_10,
             true,
+            None,
         );
 
         // 买单价格层级应该被移除
@@ -1322,6 +1351,7 @@ mod tests {
             bid_price,
             amount_10,
             false,
+            None,
         );
 
         // 插入卖单: price=ask_price (低于买单价格，会被撮合)
@@ -1330,6 +1360,7 @@ mod tests {
             ask_price,
             amount_5,
             true,
+            None,
         );
 
         // insertAfterPrice 应该基于插入前的状态（ask 侧为空）
@@ -1356,14 +1387,14 @@ mod tests {
         // 2. 卖单 @ price_100 (会匹配)
         // 3. 买单 @ price_95 (应该正确计算 insertAfterPrice)
 
-        sim.simulate_insert_order(U256::from(1), price_100, amount_10, false);
-        sim.simulate_insert_order(U256::from(2), price_100, amount_10, true);
+        sim.simulate_insert_order(U256::from(1), price_100, amount_10, false, None);
+        sim.simulate_insert_order(U256::from(2), price_100, amount_10, true, None);
 
         // 买单和卖单完全匹配后，订单簿为空
         assert!(sim.get_price_levels(false).is_empty());
 
         // 新买单应该插入到头部
-        let insert_after = sim.simulate_insert_order(U256::from(3), price_95, amount_10, false);
+        let insert_after = sim.simulate_insert_order(U256::from(3), price_95, amount_10, false, None);
         assert_eq!(insert_after.0, U256::zero()); // 检查 insert_after_price_level
     }
 
@@ -1386,7 +1417,7 @@ mod tests {
         let price = PRICE_DECIMALS;
 
         // 插入一个限价卖单: price=PRICE_DECIMALS, amount=10 units
-        sim.simulate_insert_order(U256::from(1), price, amount_10, true);
+        sim.simulate_insert_order(U256::from(1), price, amount_10, true, None);
 
         // 插入一个市价买单，花费 5 units quote tokens
         // 由于 price = PRICE_DECIMALS，5 quote = 5 base
@@ -1410,7 +1441,7 @@ mod tests {
         let price = PRICE_DECIMALS;
 
         // 插入限价卖单: price=PRICE_DECIMALS, amount=10 units
-        sim.simulate_insert_order(U256::from(1), price, amount_10, true);
+        sim.simulate_insert_order(U256::from(1), price, amount_10, true, None);
 
         // 插入市价买单，花费 10 units quote tokens = 10 units base tokens
         sim.simulate_insert_market_order(U256::from(2), amount_10, false);
@@ -1434,7 +1465,7 @@ mod tests {
         let price = PRICE_DECIMALS;
 
         // 插入限价卖单: price=PRICE_DECIMALS, amount=5 units
-        sim.simulate_insert_order(U256::from(1), price, amount_5, true);
+        sim.simulate_insert_order(U256::from(1), price, amount_5, true, None);
 
         // 插入市价买单，花费 10 units quote tokens
         // 但只有 5 units base tokens 可买，所以只花费 5 units quote tokens
@@ -1461,7 +1492,7 @@ mod tests {
         let amount_5 = U256::from(5) * TEST_AMOUNT_UNIT;
 
         // 插入限价买单: price=TEST_PRICE, amount=10 units
-        sim.simulate_insert_order(U256::from(1), TEST_PRICE, amount_10, false);
+        sim.simulate_insert_order(U256::from(1), TEST_PRICE, amount_10, false, None);
 
         // 插入市价卖单
         sim.simulate_insert_market_order(U256::from(2), amount_5, true);
@@ -1494,9 +1525,9 @@ mod tests {
         let price_102 = PRICE_DECIMALS + U256::from(2);
 
         // 设置初始订单簿
-        sim.simulate_insert_order(U256::from(1), price_100, amount_10, true); // ask@PRICE_DECIMALS
-        sim.simulate_insert_order(U256::from(2), price_101, amount_10, true); // ask@PRICE_DECIMALS+1
-        sim.simulate_insert_order(U256::from(3), price_102, amount_10, true); // ask@PRICE_DECIMALS+2
+        sim.simulate_insert_order(U256::from(1), price_100, amount_10, true, None); // ask@PRICE_DECIMALS
+        sim.simulate_insert_order(U256::from(2), price_101, amount_10, true, None); // ask@PRICE_DECIMALS+1
+        sim.simulate_insert_order(U256::from(3), price_102, amount_10, true, None); // ask@PRICE_DECIMALS+2
 
         assert_eq!(sim.get_price_levels(true), vec![
             price_100,
@@ -1521,6 +1552,7 @@ mod tests {
             price_100,
             amount_10,
             true,
+            None,
         );
         assert_eq!(insert_after.0, U256::zero()); // 正确！插入到头部（检查 insert_after_price_level）
 
@@ -1565,7 +1597,7 @@ mod tests {
         let price = PRICE_DECIMALS;
 
         // 插入一个大额限价卖单: 30 units base tokens
-        sim.simulate_insert_order(U256::from(1), price, amount_30, true);
+        sim.simulate_insert_order(U256::from(1), price, amount_30, true, None);
 
         // 插入多个市价买单，每个花费 10 units quote tokens = 10 units base tokens
         sim.simulate_insert_market_order(U256::from(10), amount_10, false);
