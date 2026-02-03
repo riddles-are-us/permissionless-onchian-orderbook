@@ -138,6 +138,11 @@
     "name": "getPriceLevel",
     "inputs": [
       {
+        "name": "tradingPair",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
         "name": "price",
         "type": "uint256",
         "internalType": "uint256"

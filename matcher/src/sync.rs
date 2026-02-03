@@ -758,7 +758,7 @@ impl StateSynchronizer {
 
         while !current_price.is_zero() {
             // 获取价格层级数据
-            let level_data = self.orderbook.get_price_level(current_price, is_ask).call().await?;
+            let level_data = self.orderbook.get_price_level(*trading_pair, current_price, is_ask).call().await?;
 
             let sim_level = SimPriceLevel {
                 price: level_data.price,
