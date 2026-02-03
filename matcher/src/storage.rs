@@ -450,11 +450,12 @@ impl MongoStorage {
     }
 
     /// 更新订单状态
+    /// filled_increment: 本次成交增量（会累加到现有 filled_amount）
     pub async fn update_order_status(
         &self,
         order_id: &str,
         status: OrderStatus,
-        filled_amount: Option<&str>,
+        filled_increment: Option<&str>,
     ) -> Result<()> {
         let collection = self.orders_collection();
 
@@ -464,8 +465,20 @@ impl MongoStorage {
             "updated_at": mongodb::bson::DateTime::now(),
         };
 
-        if let Some(filled) = filled_amount {
-            update_doc.insert("filled_amount", filled);
+        // 如果有成交增量，需要累加到现有的 filled_amount
+        if let Some(increment) = filled_increment {
+            // 先获取当前订单的 filled_amount
+            if let Some(order) = self.get_order_by_id(order_id).await? {
+                let current_filled = ethers::types::U256::from_dec_str(&order.filled_amount)
+                    .unwrap_or_default();
+                let increment_amount = ethers::types::U256::from_dec_str(increment)
+                    .unwrap_or_default();
+                let new_filled = current_filled + increment_amount;
+                update_doc.insert("filled_amount", new_filled.to_string());
+            } else {
+                // 订单不存在时直接使用增量值
+                update_doc.insert("filled_amount", increment);
+            }
         }
 
         collection
