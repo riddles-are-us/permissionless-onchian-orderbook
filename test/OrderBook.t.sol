@@ -257,7 +257,7 @@ contract OrderBookTest is Test {
         uint256 currentPriceLevel = bidHead;
         uint256 bidLevels = 0;
         while (currentPriceLevel != 0) {
-            OrderBook.PriceLevel memory level = orderBook.getPriceLevel(currentPriceLevel, false);
+            OrderBook.PriceLevel memory level = orderBook.getPriceLevel(pairId, currentPriceLevel, false);
             console.log("  Price (USDC):", level.price / 10**6);
             console.log("  Volume (WETH):", level.totalVolume / 1 ether);
             currentPriceLevel = level.nextPrice;
@@ -269,7 +269,7 @@ contract OrderBookTest is Test {
         currentPriceLevel = askHead;
         uint256 askLevels = 0;
         while (currentPriceLevel != 0) {
-            OrderBook.PriceLevel memory level = orderBook.getPriceLevel(currentPriceLevel, true);
+            OrderBook.PriceLevel memory level = orderBook.getPriceLevel(pairId, currentPriceLevel, true);
             console.log("  Price (USDC):", level.price / 10**6);
             console.log("  Volume (WETH):", level.totalVolume / 1 ether);
             currentPriceLevel = level.nextPrice;
