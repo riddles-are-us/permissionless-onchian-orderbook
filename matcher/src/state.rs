@@ -1,4 +1,4 @@
-use crate::orderbook_simulator::{OrderBookSimulator, SimPriceLevel};
+use crate::orderbook_simulator::OrderBookSimulator;
 use crate::types::*;
 use dashmap::DashMap;
 use ethers::types::{Address, U256};
@@ -33,11 +33,6 @@ pub struct GlobalState {
     /// trading_pair -> OrderBookSimulator
     pub orderbooks: Arc<DashMap<[u8; 32], OrderBookSimulator>>,
 
-    /// 全局价格层级缓存（跨交易对共享）
-    /// key = price | isAskFlag (与链上 priceLevels mapping 的 key 一致)
-    /// 用于解决多 trading pair 共享 priceLevels 的问题
-    pub global_price_levels: Arc<DashMap<U256, SimPriceLevel>>,
-
     /// 支持的交易对集合（用于快速过滤）
     pub supported_pairs: Arc<parking_lot::RwLock<HashSet<[u8; 32]>>>,
 
@@ -61,7 +56,6 @@ impl GlobalState {
             queued_requests: Arc::new(DashMap::new()),
             queue_head: Arc::new(parking_lot::RwLock::new(U256::zero())),
             orderbooks: Arc::new(DashMap::new()),
-            global_price_levels: Arc::new(DashMap::new()),
             supported_pairs: Arc::new(parking_lot::RwLock::new(HashSet::new())),
             pair_metadata: Arc::new(DashMap::new()),
             current_block: Arc::new(parking_lot::RwLock::new(0)),
@@ -247,43 +241,5 @@ impl GlobalState {
     /// 获取所有支持的交易对
     pub fn get_supported_pairs(&self) -> Vec<[u8; 32]> {
         self.supported_pairs.read().iter().cloned().collect()
-    }
-
-    // ============ 全局价格层级缓存方法 ============
-
-    /// 生成价格层级的 composite key（与链上 _getPriceLevelKey 一致）
-    /// Ask 订单使用 price 本身
-    /// Bid 订单使用 price | (1 << 255)
-    pub fn get_price_level_key(price: U256, is_ask: bool) -> U256 {
-        if is_ask {
-            price
-        } else {
-            price | (U256::one() << 255)
-        }
-    }
-
-    /// 更新全局价格层级缓存
-    pub fn update_global_price_level(&self, price: U256, is_ask: bool, level: SimPriceLevel) {
-        let key = Self::get_price_level_key(price, is_ask);
-        self.global_price_levels.insert(key, level);
-    }
-
-    /// 从全局缓存获取价格层级
-    pub fn get_global_price_level(&self, price: U256, is_ask: bool) -> Option<SimPriceLevel> {
-        let key = Self::get_price_level_key(price, is_ask);
-        self.global_price_levels.get(&key).map(|r| r.clone())
-    }
-
-    /// 从全局缓存移除价格层级
-    pub fn remove_global_price_level(&self, price: U256, is_ask: bool) {
-        let key = Self::get_price_level_key(price, is_ask);
-        self.global_price_levels.remove(&key);
-    }
-
-    /// 获取全局价格层级的 tail_order_id
-    /// 用于 simulate_insert_order 时确定正确的 insertAfterOrder
-    pub fn get_global_tail_order_id(&self, price: U256, is_ask: bool) -> Option<U256> {
-        let key = Self::get_price_level_key(price, is_ask);
-        self.global_price_levels.get(&key).map(|r| r.tail_order_id)
     }
 }

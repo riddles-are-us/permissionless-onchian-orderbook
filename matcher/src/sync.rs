@@ -778,11 +778,6 @@ impl StateSynchronizer {
                 orderbook.add_existing_price_level(sim_level.clone(), is_ask);
             }
 
-            // 同时更新全局价格层级缓存
-            // 注意：如果多个 trading pair 在同一价格有订单，全局缓存会保存最新同步的那个
-            // 但由于链上 priceLevels 是全局共享的，所有 trading pair 在同一价格的 tail_order_id 应该是一致的
-            self.state.update_global_price_level(current_price, is_ask, sim_level.clone());
-
             level_count += 1;
             current_price = sim_level.next_price;
         }
@@ -1066,18 +1061,6 @@ impl StateSynchronizer {
                         inserted.order_id, inserted.price, inserted.is_ask
                     );
                 }
-
-                // 更新全局价格层级缓存的 tail_order_id
-                // 这是关键：确保跨 trading pair 的 insertAfterOrder 正确
-                if let Some(mut global_level) = state.global_price_levels.get_mut(
-                    &GlobalState::get_price_level_key(inserted.price, inserted.is_ask)
-                ) {
-                    if global_level.head_order_id.is_zero() {
-                        global_level.head_order_id = inserted.order_id;
-                    }
-                    global_level.tail_order_id = inserted.order_id;
-                    global_level.total_volume += inserted.amount;
-                }
             }
 
             OrderBookEvents::PriceLevelCreatedFilter(created) => {
@@ -1225,17 +1208,6 @@ impl StateSynchronizer {
                         created.price, created.is_ask
                     );
                 }
-
-                // 更新全局价格层级缓存
-                let new_global_level = SimPriceLevel {
-                    price: created.price,
-                    total_volume: U256::zero(),
-                    head_order_id: U256::zero(),
-                    tail_order_id: U256::zero(),
-                    next_price: U256::zero(),
-                    prev_price: U256::zero(),
-                };
-                state.update_global_price_level(created.price, created.is_ask, new_global_level);
             }
 
             OrderBookEvents::PriceLevelRemovedFilter(removed) => {
@@ -1307,9 +1279,6 @@ impl StateSynchronizer {
                         debug!("  Removed bid price level at {}", removed.price);
                     }
                 }
-
-                // 从全局价格层级缓存中移除
-                state.remove_global_price_level(removed.price, removed.is_ask);
             }
 
             OrderBookEvents::TradeFilter(trade) => {
@@ -1462,17 +1431,6 @@ impl StateSynchronizer {
                                 }
                                 if level.tail_order_id == filled.order_id {
                                     level.tail_order_id = prev_order_id;
-                                }
-                            }
-
-                            // 同时更新全局价格层级缓存的 head/tail
-                            let global_key = GlobalState::get_price_level_key(price, is_ask);
-                            if let Some(mut global_level) = state.global_price_levels.get_mut(&global_key) {
-                                if global_level.head_order_id == filled.order_id {
-                                    global_level.head_order_id = next_order_id;
-                                }
-                                if global_level.tail_order_id == filled.order_id {
-                                    global_level.tail_order_id = prev_order_id;
                                 }
                             }
                         }

@@ -272,20 +272,12 @@ impl MatchingEngine {
                 }
                 RequestType::PlaceOrder => {
                     if request.order_type == OrderType::Limit {
-                        // 获取全局 price level 的 tail_order_id
-                        // 这解决了多 trading pair 共享 priceLevels 的问题
-                        let global_tail_order_id = self.state.get_global_tail_order_id(
-                            request.price,
-                            request.is_ask,
-                        );
-
                         // 限价单：使用 simulator 模拟插入，获取 insertAfterPrice 和 insertAfterOrder
                         let (insert_after_price, insert_after_order) = sim.simulate_insert_order(
                             request.request_id,
                             request.price,
                             request.amount,
                             request.is_ask,
-                            global_tail_order_id,
                         );
 
                         debug!(
