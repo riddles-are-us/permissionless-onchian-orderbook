@@ -37,4 +37,16 @@ interface ISequencer {
         uint256 amount,
         uint256 uncancellableDuration  // 订单不可撤销时长（秒），0表示可立即撤销
     );
+
+    /**
+     * @notice 清除订单的 pending remove 状态
+     * @param orderId 订单ID
+     */
+    function clearPendingRemove(uint256 orderId) external;
+
+    /**
+     * @notice 标记订单已从 OrderBook 移除
+     * @param orderId 订单ID
+     */
+    function markOrderRemovedFromBook(uint256 orderId) external;
 }
