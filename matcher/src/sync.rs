@@ -703,7 +703,7 @@ impl StateSynchronizer {
                     let submission = BatchSubmission {
                         match_id: batch.match_id.to_string(),
                         submitter: format!("{:?}", batch.submitter).to_lowercase(),
-                        processed_count: batch.processed_count.as_u64(),
+                        processed_count: batch.processed_count.low_u64(),
                         submitter_reward: batch.total_fees.to_string(),
                         submitted_at,
                         block_number,
@@ -1510,7 +1510,7 @@ impl StateSynchronizer {
                     let submission = BatchSubmission {
                         match_id: batch.match_id.to_string(),
                         submitter: format!("{:?}", batch.submitter).to_lowercase(),
-                        processed_count: batch.processed_count.as_u64(),
+                        processed_count: batch.processed_count.low_u64(),
                         submitter_reward: batch.total_fees.to_string(),
                         submitted_at: BsonDateTime::now(),
                         block_number,
