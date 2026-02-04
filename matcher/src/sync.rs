@@ -575,8 +575,9 @@ impl StateSynchronizer {
                     };
 
                     // 从事件中提取链上时间戳和不可撤销时长
-                    let chain_created_at = place_order.timestamp.as_u64();
-                    let uncancellable_duration = place_order.uncancellable_duration.as_u64();
+                    // 使用 low_u64() 避免溢出 panic
+                    let chain_created_at = place_order.timestamp.low_u64();
+                    let uncancellable_duration = place_order.uncancellable_duration.low_u64();
                     let uncancellable_until = if uncancellable_duration > 0 {
                         Some(chain_created_at + uncancellable_duration)
                     } else {
@@ -838,8 +839,9 @@ impl StateSynchronizer {
                 // 从链上订单数据中提取 createdAt 和 uncancellableDuration
                 // order_data ABI索引: 0=id, 1=trader, 2=amount, 3=filledAmount, 4=isMarketOrder, 5=isAsk,
                 //                     6=priceLevel, 7=createdAt, 8=uncancellableDuration, 9=nextOrderId, 10=prevOrderId
-                let chain_created_at = order_data.7.as_u64();
-                let uncancellable_duration = order_data.8.as_u64();
+                // 使用 low_u64() 避免溢出 panic
+                let chain_created_at = order_data.7.low_u64();
+                let uncancellable_duration = order_data.8.low_u64();
                 let uncancellable_until = if uncancellable_duration > 0 {
                     Some(chain_created_at + uncancellable_duration)
                 } else {
@@ -1576,8 +1578,9 @@ impl StateSynchronizer {
 
                 if let Some(ref storage) = storage {
                     // 从事件中提取链上时间戳和不可撤销时长
-                    let chain_created_at = place_order.timestamp.as_u64();
-                    let uncancellable_duration = place_order.uncancellable_duration.as_u64();
+                    // 使用 low_u64() 避免溢出 panic
+                    let chain_created_at = place_order.timestamp.low_u64();
+                    let uncancellable_duration = place_order.uncancellable_duration.low_u64();
                     let uncancellable_until = if uncancellable_duration > 0 {
                         Some(chain_created_at + uncancellable_duration)
                     } else {
