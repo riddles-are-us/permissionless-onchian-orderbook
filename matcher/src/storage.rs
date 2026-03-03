@@ -439,7 +439,7 @@ impl MongoStorage {
 
         let filter = doc! { "_id": &order.order_id };
         let update = doc! {
-            "$set": mongodb::bson::to_document(order)?
+            "$setOnInsert": mongodb::bson::to_document(order)?
         };
 
         collection

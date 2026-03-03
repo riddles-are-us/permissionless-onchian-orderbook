@@ -1063,6 +1063,17 @@ impl StateSynchronizer {
                         inserted.order_id, inserted.price, inserted.is_ask
                     );
                 }
+
+                // Update order status in MongoDB
+                if let Some(ref storage) = storage {
+                    if let Err(e) = storage.update_order_status(
+                        &inserted.order_id.to_string(),
+                        OrderStatus::Active,
+                        None,
+                    ).await {
+                        warn!("Failed to update order status in MongoDB: {}", e);
+                    }
+                }
             }
 
             OrderBookEvents::PriceLevelCreatedFilter(created) => {
