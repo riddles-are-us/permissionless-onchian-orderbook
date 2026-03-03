@@ -1491,39 +1491,42 @@ impl StateSynchronizer {
                 );
 
                 if let Some(mut orderbook) = state.get_orderbook_mut(&trading_pair) {
-                    // Get the order before removing it to update the linked list
-                    if let Some(order) = orderbook.orders.get(&removed.order_id) {
-                        let prev_order_id = order.prev_order_id;
-                        let next_order_id = order.next_order_id;
-
-                        // Update the previous order's next pointer
-                        if !prev_order_id.is_zero() {
-                            if let Some(prev_order) = orderbook.orders.get_mut(&prev_order_id) {
-                                prev_order.next_order_id = next_order_id;
-                            }
-                        }
-
-                        // Update the next order's prev pointer
-                        if !next_order_id.is_zero() {
-                            if let Some(next_order) = orderbook.orders.get_mut(&next_order_id) {
-                                next_order.prev_order_id = prev_order_id;
-                            }
-                        }
-
-                        // Update price level head/tail if necessary
-                        let price_level_key = if order.is_ask {
-                            order.price_level
+                    // Get the order info before removing it to update the linked list
+                    let (prev_order_id, next_order_id, is_ask, price_level) =
+                        if let Some(order) = orderbook.orders.get(&removed.order_id) {
+                            (order.prev_order_id, order.next_order_id, order.is_ask, order.price_level)
                         } else {
-                            order.price_level | (U256::one() << 255)
+                            // Order not found, just return
+                            return Ok(());
                         };
 
-                        if let Some(level) = orderbook.price_levels.get_mut(&price_level_key) {
-                            if level.head_order_id == removed.order_id {
-                                level.head_order_id = next_order_id;
-                            }
-                            if level.tail_order_id == removed.order_id {
-                                level.tail_order_id = prev_order_id;
-                            }
+                    // Update the previous order's next pointer
+                    if !prev_order_id.is_zero() {
+                        if let Some(prev_order) = orderbook.orders.get_mut(&prev_order_id) {
+                            prev_order.next_order_id = next_order_id;
+                        }
+                    }
+
+                    // Update the next order's prev pointer
+                    if !next_order_id.is_zero() {
+                        if let Some(next_order) = orderbook.orders.get_mut(&next_order_id) {
+                            next_order.prev_order_id = prev_order_id;
+                        }
+                    }
+
+                    // Update price level head/tail if necessary
+                    let price_level_key = if is_ask {
+                        price_level
+                    } else {
+                        price_level | (U256::one() << 255)
+                    };
+
+                    if let Some(level) = orderbook.price_levels.get_mut(&price_level_key) {
+                        if level.head_order_id == removed.order_id {
+                            level.head_order_id = next_order_id;
+                        }
+                        if level.tail_order_id == removed.order_id {
+                            level.tail_order_id = prev_order_id;
                         }
                     }
 
