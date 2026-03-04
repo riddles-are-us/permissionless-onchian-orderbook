@@ -115,13 +115,15 @@ impl Config {
                 if let Ok(deploy_content) = fs::read_to_string("../deployments.json") {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&deploy_content) {
                         let mut pairs = Vec::new();
-                        // 读取 pairId (ETH/USDC)
-                        if let Some(pair_id) = json.get("pairId").and_then(|v| v.as_str()) {
-                            pairs.push(pair_id.to_string());
-                        }
-                        // 读取 wbtcPairId (BTC/USDC)
-                        if let Some(pair_id) = json.get("wbtcPairId").and_then(|v| v.as_str()) {
-                            pairs.push(pair_id.to_string());
+                        // 自动读取所有以 "PairId" 或 "pairId" 结尾的字段
+                        if let Some(obj) = json.as_object() {
+                            for (key, value) in obj {
+                                if (key.ends_with("PairId") || key.ends_with("pairId")) && key != "deployer" {
+                                    if let Some(pair_id) = value.as_str() {
+                                        pairs.push(pair_id.to_string());
+                                    }
+                                }
+                            }
                         }
                         config.contracts.trading_pairs = pairs;
                     }
