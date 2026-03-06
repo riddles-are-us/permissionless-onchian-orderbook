@@ -1492,48 +1492,51 @@ impl StateSynchronizer {
 
                 if let Some(mut orderbook) = state.get_orderbook_mut(&trading_pair) {
                     // Get the order info before removing it to update the linked list
-                    let (prev_order_id, next_order_id, is_ask, price_level) =
-                        if let Some(order) = orderbook.orders.get(&removed.order_id) {
-                            (order.prev_order_id, order.next_order_id, order.is_ask, order.price_level)
+                    // Note: Market orders may not exist in orderbook.orders, so we handle that case
+                    if let Some(order) = orderbook.orders.get(&removed.order_id) {
+                        let prev_order_id = order.prev_order_id;
+                        let next_order_id = order.next_order_id;
+                        let is_ask = order.is_ask;
+                        let price_level = order.price_level;
+
+                        // Update the previous order's next pointer
+                        if !prev_order_id.is_zero() {
+                            if let Some(prev_order) = orderbook.orders.get_mut(&prev_order_id) {
+                                prev_order.next_order_id = next_order_id;
+                            }
+                        }
+
+                        // Update the next order's prev pointer
+                        if !next_order_id.is_zero() {
+                            if let Some(next_order) = orderbook.orders.get_mut(&next_order_id) {
+                                next_order.prev_order_id = prev_order_id;
+                            }
+                        }
+
+                        // Update price level head/tail if necessary
+                        let price_level_key = if is_ask {
+                            price_level
                         } else {
-                            // Order not found, just return
-                            return Ok(());
+                            price_level | (U256::one() << 255)
                         };
 
-                    // Update the previous order's next pointer
-                    if !prev_order_id.is_zero() {
-                        if let Some(prev_order) = orderbook.orders.get_mut(&prev_order_id) {
-                            prev_order.next_order_id = next_order_id;
+                        if let Some(level) = orderbook.price_levels.get_mut(&price_level_key) {
+                            if level.head_order_id == removed.order_id {
+                                level.head_order_id = next_order_id;
+                            }
+                            if level.tail_order_id == removed.order_id {
+                                level.tail_order_id = prev_order_id;
+                            }
                         }
+
+                        // Remove the order from the map
+                        orderbook.orders.remove(&removed.order_id);
                     }
-
-                    // Update the next order's prev pointer
-                    if !next_order_id.is_zero() {
-                        if let Some(next_order) = orderbook.orders.get_mut(&next_order_id) {
-                            next_order.prev_order_id = prev_order_id;
-                        }
-                    }
-
-                    // Update price level head/tail if necessary
-                    let price_level_key = if is_ask {
-                        price_level
-                    } else {
-                        price_level | (U256::one() << 255)
-                    };
-
-                    if let Some(level) = orderbook.price_levels.get_mut(&price_level_key) {
-                        if level.head_order_id == removed.order_id {
-                            level.head_order_id = next_order_id;
-                        }
-                        if level.tail_order_id == removed.order_id {
-                            level.tail_order_id = prev_order_id;
-                        }
-                    }
-
-                    // Remove the order from the map
-                    orderbook.orders.remove(&removed.order_id);
+                    // If order not found in memory (e.g., market orders), we still need to update MongoDB
                 }
 
+                // Always update MongoDB status, even if order wasn't found in memory
+                // This is important for market orders which may not be stored in the orderbook simulator
                 if let Some(ref storage) = storage {
                     if let Err(e) = storage.update_order_status(
                         &removed.order_id.to_string(),
