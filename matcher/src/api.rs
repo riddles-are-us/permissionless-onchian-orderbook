@@ -263,7 +263,7 @@ async fn get_user_orders(
     query: web::Query<OrderQuery>,
 ) -> impl Responder {
     let trader = path.into_inner();
-    let limit = query.limit.unwrap_or(50).min(100);
+    let limit = query.limit.unwrap_or(50).min(1000);
     let offset = query.offset.unwrap_or(0);
     let pair_id = query.pair_id.as_deref();
 
@@ -314,7 +314,7 @@ async fn get_trades(
     state: web::Data<Arc<ApiState>>,
     query: web::Query<TradeQuery>,
 ) -> impl Responder {
-    let limit = query.limit.unwrap_or(50).min(100);
+    let limit = query.limit.unwrap_or(50).min(1000);
     let offset = query.offset.unwrap_or(0);
     let pair_id = query.pair_id.as_deref();
 
@@ -329,7 +329,7 @@ async fn get_orders(
     state: web::Data<Arc<ApiState>>,
     query: web::Query<OrderQuery>,
 ) -> impl Responder {
-    let limit = query.limit.unwrap_or(50).min(100);
+    let limit = query.limit.unwrap_or(50).min(1000);
     let offset = query.offset.unwrap_or(0);
 
     let status = query.status.as_ref().and_then(|s| match s.to_lowercase().as_str() {
@@ -891,7 +891,7 @@ async fn get_batch_submissions(
     state: web::Data<Arc<ApiState>>,
     query: web::Query<BatchSubmissionQuery>,
 ) -> impl Responder {
-    let limit = query.limit.unwrap_or(50).min(100);
+    let limit = query.limit.unwrap_or(50).min(1000);
     let offset = query.offset.unwrap_or(0);
 
     match state.storage.get_batch_submissions(query.submitter.as_deref(), limit, offset).await {
