@@ -32,7 +32,7 @@ impl MatchingEngine {
             .with_chain_id(config.network.chain_id);
 
         // 创建签名中间件
-        let client = SignerMiddleware::new(provider.clone(), wallet);
+        let client = SignerMiddleware::new(provider.clone(), wallet.clone());
 
         // 创建 OrderBook 合约实例
         let orderbook_addr: Address = config.contracts.orderbook.parse()?;
