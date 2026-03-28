@@ -13,6 +13,7 @@ pub struct MatchingEngine {
     config: Config,
     state: GlobalState,
     orderbook: OrderBook<SignerMiddleware<Arc<Provider<Ws>>, LocalWallet>>,
+    wallet: LocalWallet,
 }
 
 impl MatchingEngine {
@@ -44,11 +45,43 @@ impl MatchingEngine {
             config,
             state,
             orderbook,
+            wallet,
         })
     }
 
+    /// 重新初始化 WebSocket 连接和合约实例
+    async fn reconnect(&mut self) -> Result<()> {
+        info!("🔄 Reconnecting to WebSocket...");
+
+        // 重新连接到节点
+        let ws = Ws::connect(&self.config.network.rpc_url)
+            .await
+            .context("Failed to reconnect to WebSocket")?;
+        let provider = Arc::new(Provider::new(ws));
+
+        // 创建签名中间件
+        let client = SignerMiddleware::new(provider.clone(), self.wallet.clone());
+
+        // 重新创建 OrderBook 合约实例
+        let orderbook_addr: Address = self.config.contracts.orderbook.parse()?;
+        self.orderbook = OrderBook::new(orderbook_addr, Arc::new(client));
+
+        info!("✅ WebSocket reconnected successfully");
+        Ok(())
+    }
+
+    /// 检查错误是否为 WebSocket 连接错误
+    fn is_websocket_error(error: &anyhow::Error) -> bool {
+        let error_msg = error.to_string().to_lowercase();
+        error_msg.contains("websocket")
+            || error_msg.contains("connection")
+            || error_msg.contains("closed")
+            || error_msg.contains("broken pipe")
+            || error_msg.contains("connection reset")
+    }
+
     /// 运行匹配引擎
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(mut self) -> Result<()> {
         info!("🎯 Starting matching engine");
         info!("  Batch size: {}", self.config.matching.max_batch_size);
         info!(
@@ -78,6 +111,11 @@ impl MatchingEngine {
         let interval = Duration::from_millis(self.config.matching.matching_interval_ms);
         let mut ticker = tokio::time::interval(interval);
 
+        // WebSocket 重连相关变量
+        const MAX_RETRY_DELAY: u64 = 60; // 最大重试延迟（秒）
+        let mut retry_count: u32 = 0;
+        let mut consecutive_errors: u32 = 0;
+
         loop {
             ticker.tick().await;
 
@@ -86,9 +124,45 @@ impl MatchingEngine {
                     if processed > 0 {
                         info!("✨ Processed {} requests", processed);
                     }
+                    // 成功处理，重置错误计数
+                    consecutive_errors = 0;
+                    retry_count = 0;
                 }
                 Err(e) => {
                     warn!("Error processing batch: {}", e);
+
+                    // 检查是否为 WebSocket 连接错误
+                    if Self::is_websocket_error(&e) {
+                        consecutive_errors += 1;
+                        warn!("⚠️ WebSocket error detected (consecutive errors: {})", consecutive_errors);
+
+                        // 如果连续错误超过 3 次，尝试重连
+                        if consecutive_errors >= 3 {
+                            warn!("⚠️ Too many consecutive WebSocket errors, attempting reconnection...");
+                            retry_count += 1;
+
+                            // 指数退避延迟
+                            let delay = std::cmp::min(2u64.pow(retry_count.min(5)), MAX_RETRY_DELAY);
+                            warn!("⏳ Waiting {} seconds before reconnecting...", delay);
+                            tokio::time::sleep(Duration::from_secs(delay)).await;
+
+                            // 尝试重连
+                            match self.reconnect().await {
+                                Ok(_) => {
+                                    info!("✅ Successfully reconnected to WebSocket");
+                                    consecutive_errors = 0;
+                                    retry_count = 0;
+                                }
+                                Err(reconnect_err) => {
+                                    error!("❌ Failed to reconnect: {}", reconnect_err);
+                                    // 继续循环，下次再试
+                                }
+                            }
+                        }
+                    } else {
+                        // 非 WebSocket 错误，重置连续错误计数
+                        consecutive_errors = 0;
+                    }
                 }
             }
         }
