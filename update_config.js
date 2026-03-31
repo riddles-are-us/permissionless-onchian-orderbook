@@ -85,7 +85,7 @@ private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff8
 gas_price_gwei = 1
 
 # Gas 限制
-gas_limit = 5000000
+gas_limit = 15000000
 
 # 交易对配置
 ${tradingPairsConfig}
@@ -135,4 +135,3 @@ console.log('\n💡 Next steps:');
 console.log('   1. Start Anvil: anvil');
 console.log('   2. Start Matcher: cd matcher && cargo run');
 console.log('   3. Start Frontend: cd orderbook-app && npm run dev');
-

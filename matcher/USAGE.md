@@ -36,7 +36,7 @@ sequencer = "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9"
 [executor]
 private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 gas_price_gwei = 1
-gas_limit = 5000000
+gas_limit = 15000000
 
 [matching]
 max_batch_size = 10

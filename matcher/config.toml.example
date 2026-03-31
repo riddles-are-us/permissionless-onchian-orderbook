@@ -49,7 +49,7 @@ private_key = "0xYOUR_PRIVATE_KEY_HERE"
 gas_price_gwei = 2
 
 # Gas 限制
-gas_limit = 5000000
+gas_limit = 15000000
 
 [mongodb]
 # 启用 MongoDB 持久化
