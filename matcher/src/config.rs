@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::{env, fs};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -136,6 +136,12 @@ impl Config {
             config.contracts.trading_pair = config.contracts.trading_pairs[0].clone();
         }
 
+        if let Ok(private_key) = env::var("PRIVATE_KEY") {
+            if !private_key.trim().is_empty() {
+                config.executor.private_key = private_key;
+            }
+        }
+
         Ok(config)
     }
 
@@ -155,5 +161,73 @@ impl Config {
                 None
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn write_temp_config(content: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("matcher-config-test-{nanos}.toml"));
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn from_file_prefers_private_key_from_environment() {
+        let _guard = env_lock().lock().unwrap();
+        let path = write_temp_config(
+            r#"[network]
+rpc_url = "ws://127.0.0.1:8545"
+chain_id = 31337
+
+[contracts]
+sequencer = "0x1111111111111111111111111111111111111111"
+orderbook = "0x2222222222222222222222222222222222222222"
+account = "0x3333333333333333333333333333333333333333"
+trading_pair = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[sync]
+start_block = 0
+sync_historical = true
+
+[matching]
+max_batch_size = 100
+matching_interval_ms = 1000
+
+[executor]
+private_key = "from-file"
+gas_price_gwei = 1
+gas_limit = 15000000
+"#,
+        );
+
+        let original = std::env::var("PRIVATE_KEY").ok();
+        std::env::set_var("PRIVATE_KEY", "from-env");
+
+        let config = Config::from_file(path.to_str().unwrap()).unwrap();
+
+        if let Some(value) = original {
+            std::env::set_var("PRIVATE_KEY", value);
+        } else {
+            std::env::remove_var("PRIVATE_KEY");
+        }
+        fs::remove_file(path).unwrap();
+
+        assert_eq!(config.executor.private_key, "from-env");
     }
 }
