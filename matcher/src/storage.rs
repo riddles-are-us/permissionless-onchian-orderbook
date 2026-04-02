@@ -94,7 +94,7 @@ pub struct StoredOrder {
     /// 订单状态
     pub status: OrderStatus,
 
-    /// 创建时间 (区块时间戳或事件时间)
+    /// 创建时间 (事件处理时间，用于排序)
     #[serde(with = "bson_datetime_as_iso8601")]
     pub created_at: BsonDateTime,
 
@@ -107,6 +107,21 @@ pub struct StoredOrder {
 
     /// 创建时的交易哈希
     pub tx_hash: Option<String>,
+
+    /// 链上订单创建时间戳 (block.timestamp，秒)
+    /// 用于计算 uncancellable_until
+    #[serde(default)]
+    pub chain_created_at: u64,
+
+    /// 订单不可撤销时长（秒），0表示可立即撤销
+    #[serde(default)]
+    pub uncancellable_duration: u64,
+
+    /// 订单不可撤销截止时间戳（秒）
+    /// = chain_created_at + uncancellable_duration
+    /// 如果为 0 或 None，表示可立即撤销
+    #[serde(default)]
+    pub uncancellable_until: Option<u64>,
 }
 
 /// K线时间周期
@@ -424,7 +439,7 @@ impl MongoStorage {
 
         let filter = doc! { "_id": &order.order_id };
         let update = doc! {
-            "$set": mongodb::bson::to_document(order)?
+            "$setOnInsert": mongodb::bson::to_document(order)?
         };
 
         collection
@@ -435,11 +450,12 @@ impl MongoStorage {
     }
 
     /// 更新订单状态
+    /// filled_increment: 本次成交增量（会累加到现有 filled_amount）
     pub async fn update_order_status(
         &self,
         order_id: &str,
         status: OrderStatus,
-        filled_amount: Option<&str>,
+        filled_increment: Option<&str>,
     ) -> Result<()> {
         let collection = self.orders_collection();
 
@@ -449,8 +465,20 @@ impl MongoStorage {
             "updated_at": mongodb::bson::DateTime::now(),
         };
 
-        if let Some(filled) = filled_amount {
-            update_doc.insert("filled_amount", filled);
+        // 如果有成交增量，需要累加到现有的 filled_amount
+        if let Some(increment) = filled_increment {
+            // 先获取当前订单的 filled_amount
+            if let Some(order) = self.get_order_by_id(order_id).await? {
+                let current_filled = ethers::types::U256::from_dec_str(&order.filled_amount)
+                    .unwrap_or_default();
+                let increment_amount = ethers::types::U256::from_dec_str(increment)
+                    .unwrap_or_default();
+                let new_filled = current_filled + increment_amount;
+                update_doc.insert("filled_amount", new_filled.to_string());
+            } else {
+                // 订单不存在时直接使用增量值
+                update_doc.insert("filled_amount", increment);
+            }
         }
 
         collection
@@ -460,17 +488,35 @@ impl MongoStorage {
         Ok(())
     }
 
-    /// 保存交易记录
+    /// 保存交易记录（使用 upsert 避免重复）
     pub async fn insert_trade(&self, trade: &StoredTrade) -> Result<()> {
         let collection = self.trades_collection();
-        collection.insert_one(trade, None).await?;
+
+        let filter = doc! { "_id": &trade.trade_id };
+        let update = doc! {
+            "$set": mongodb::bson::to_document(trade)?
+        };
+
+        collection
+            .update_one(filter, update, mongodb::options::UpdateOptions::builder().upsert(true).build())
+            .await?;
+
         Ok(())
     }
 
-    /// 保存batch提交记录
+    /// 保存batch提交记录（使用 upsert 避免重复）
     pub async fn insert_batch_submission(&self, submission: &BatchSubmission) -> Result<()> {
         let collection = self.batch_submissions_collection();
-        collection.insert_one(submission, None).await?;
+
+        let filter = doc! { "_id": &submission.match_id };
+        let update = doc! {
+            "$set": mongodb::bson::to_document(submission)?
+        };
+
+        collection
+            .update_one(filter, update, mongodb::options::UpdateOptions::builder().upsert(true).build())
+            .await?;
+
         Ok(())
     }
 
@@ -511,12 +557,16 @@ impl MongoStorage {
         status: Option<OrderStatus>,
         limit: i64,
         offset: u64,
+        pair_id: Option<&str>,
     ) -> Result<Vec<StoredOrder>> {
         let collection = self.orders_collection();
 
         let mut filter = doc! { "trader": trader.to_lowercase() };
         if let Some(s) = status {
             filter.insert("status", mongodb::bson::to_bson(&s)?);
+        }
+        if let Some(pid) = pair_id {
+            filter.insert("trading_pair", pid.to_lowercase());
         }
 
         let options = mongodb::options::FindOptions::builder()
@@ -570,6 +620,7 @@ impl MongoStorage {
         &self,
         limit: i64,
         offset: u64,
+        pair_id: Option<&str>,
     ) -> Result<Vec<StoredTrade>> {
         let collection = self.trades_collection();
 
@@ -579,7 +630,13 @@ impl MongoStorage {
             .limit(limit)
             .build();
 
-        let mut cursor = collection.find(doc! {}, options).await?;
+        // Build filter based on pair_id
+        let filter = match pair_id {
+            Some(id) => doc! { "trading_pair": id },
+            None => doc! {},
+        };
+
+        let mut cursor = collection.find(filter, options).await?;
         let mut trades = Vec::new();
 
         while cursor.advance().await? {
@@ -809,4 +866,264 @@ impl MongoStorage {
 
         Ok(collection.find_one(filter, options).await?)
     }
+
+    /// 统计指定时间范围内活跃的 matcher 数量
+    ///
+    /// 返回：(活跃 matcher 数量, 各 matcher 的统计信息, 总提交次数)
+    pub async fn get_active_matchers_stats(
+        &self,
+        hours: u64,
+    ) -> Result<(u64, Vec<MatcherStats>, u64)> {
+        use futures::stream::TryStreamExt;
+
+        let collection = self.batch_submissions_collection();
+
+        // 计算时间范围 - 使用 ISO 8601 字符串格式（因为 submitted_at 存储为字符串）
+        let now = chrono::Utc::now();
+        let since = now - chrono::Duration::hours(hours as i64);
+        let since_str = since.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+        // 使用 aggregation pipeline 统计
+        let pipeline = vec![
+            // 1. 筛选时间范围内的记录（使用字符串比较）
+            doc! {
+                "$match": {
+                    "submitted_at": { "$gte": &since_str }
+                }
+            },
+            // 2. 按 submitter 分组，统计每个 matcher 的提交次数和总奖励
+            doc! {
+                "$group": {
+                    "_id": "$submitter",
+                    "submission_count": { "$sum": 1 },
+                    "total_processed": { "$sum": "$processed_count" },
+                    "last_submission": { "$max": "$submitted_at" },
+                    // 收集所有 submitter_reward 用于后续累加
+                    "rewards": { "$push": "$submitter_reward" }
+                }
+            },
+            // 3. 按提交次数降序排列
+            doc! {
+                "$sort": { "submission_count": -1 }
+            }
+        ];
+
+        let mut cursor = collection.aggregate(pipeline, None).await?;
+        let mut matcher_stats: Vec<MatcherStats> = Vec::new();
+        let mut total_submissions: u64 = 0;
+
+        while let Some(doc) = cursor.try_next().await? {
+            let submitter = doc.get_str("_id").unwrap_or_default().to_string();
+            let submission_count = doc.get_i32("submission_count").unwrap_or(0) as u64;
+            let total_processed = doc.get_i64("total_processed").unwrap_or(0) as u64;
+            let last_submission = doc.get_str("last_submission")
+                .unwrap_or_default()
+                .to_string();
+
+            // 累加手续费（rewards 是字符串数组）
+            let total_fees = if let Ok(rewards) = doc.get_array("rewards") {
+                let mut sum: u128 = 0;
+                for reward in rewards {
+                    if let Some(reward_str) = reward.as_str() {
+                        if let Ok(val) = reward_str.parse::<u128>() {
+                            sum += val;
+                        }
+                    }
+                }
+                sum.to_string()
+            } else {
+                "0".to_string()
+            };
+
+            total_submissions += submission_count;
+
+            matcher_stats.push(MatcherStats {
+                submitter,
+                submission_count,
+                total_processed,
+                total_fees,
+                last_submission,
+            });
+        }
+
+        let active_count = matcher_stats.len() as u64;
+
+        Ok((active_count, matcher_stats, total_submissions))
+    }
+
+    /// 获取交易对的统计信息
+    ///
+    /// 包括：流动性（挂单总价值）、24h交易量、24h独立交易者数、24h交易笔数
+    pub async fn get_trading_pair_stats(&self, pair_id: &str) -> Result<TradingPairStats> {
+        use futures::stream::TryStreamExt;
+
+        // 1. 计算流动性：统计 Active 和 PartiallyFilled 状态订单的总价值
+        let orders_collection = self.orders_collection();
+        let liquidity_pipeline = vec![
+            // 筛选该交易对的活跃订单
+            doc! {
+                "$match": {
+                    "trading_pair": pair_id,
+                    "status": { "$in": ["active", "partiallyfilled"] }
+                }
+            },
+            // 计算每个订单的剩余价值 (price * (amount - filled_amount))
+            doc! {
+                "$project": {
+                    "price": { "$toDecimal": "$price" },
+                    "remaining": {
+                        "$subtract": [
+                            { "$toDecimal": "$amount" },
+                            { "$toDecimal": "$filled_amount" }
+                        ]
+                    }
+                }
+            },
+            // 计算价值并汇总
+            doc! {
+                "$group": {
+                    "_id": null,
+                    "total_value": {
+                        "$sum": {
+                            "$multiply": ["$price", "$remaining"]
+                        }
+                    }
+                }
+            }
+        ];
+
+        let mut liquidity_cursor = orders_collection.aggregate(liquidity_pipeline, None).await?;
+        let liquidity = if let Some(doc) = liquidity_cursor.try_next().await? {
+            // 从 Decimal128 获取值
+            if let Ok(decimal) = doc.get_document("total_value") {
+                decimal.to_string()
+            } else if let Some(bson_val) = doc.get("total_value") {
+                match bson_val {
+                    mongodb::bson::Bson::Decimal128(d) => d.to_string(),
+                    mongodb::bson::Bson::Double(d) => (*d as u128).to_string(),
+                    mongodb::bson::Bson::Int64(i) => (*i as u128).to_string(),
+                    mongodb::bson::Bson::Int32(i) => (*i as u128).to_string(),
+                    _ => "0".to_string(),
+                }
+            } else {
+                "0".to_string()
+            }
+        } else {
+            "0".to_string()
+        };
+
+        // 2. 计算 24h 统计：交易量、交易者数、交易笔数
+        let trades_collection = self.trades_collection();
+        let now = chrono::Utc::now();
+        let since_24h = now - chrono::Duration::hours(24);
+        let since_str = since_24h.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+        let trades_pipeline = vec![
+            // 筛选该交易对 24h 内的交易
+            doc! {
+                "$match": {
+                    "trading_pair": pair_id,
+                    "traded_at": { "$gte": &since_str }
+                }
+            },
+            // 计算统计数据
+            doc! {
+                "$group": {
+                    "_id": null,
+                    "trade_count": { "$sum": 1 },
+                    // 计算交易量 (price * amount)
+                    "volumes": {
+                        "$push": {
+                            "$multiply": [
+                                { "$toDecimal": "$price" },
+                                { "$toDecimal": "$amount" }
+                            ]
+                        }
+                    },
+                    // 收集所有交易者
+                    "buyers": { "$addToSet": "$buyer" },
+                    "sellers": { "$addToSet": "$seller" }
+                }
+            }
+        ];
+
+        let mut trades_cursor = trades_collection.aggregate(trades_pipeline, None).await?;
+        let (volume_24h, traders_24h, trades_24h) = if let Some(doc) = trades_cursor.try_next().await? {
+            let trade_count = doc.get_i32("trade_count").unwrap_or(0) as u64;
+
+            // 计算总交易量
+            let total_volume = if let Ok(volumes) = doc.get_array("volumes") {
+                let mut sum: f64 = 0.0;
+                for v in volumes {
+                    if let mongodb::bson::Bson::Decimal128(d) = v {
+                        if let Ok(val) = d.to_string().parse::<f64>() {
+                            sum += val;
+                        }
+                    }
+                }
+                (sum as u128).to_string()
+            } else {
+                "0".to_string()
+            };
+
+            // 计算独立交易者数量 (buyers + sellers 的并集)
+            let mut unique_traders = std::collections::HashSet::new();
+            if let Ok(buyers) = doc.get_array("buyers") {
+                for b in buyers {
+                    if let Some(addr) = b.as_str() {
+                        unique_traders.insert(addr.to_string());
+                    }
+                }
+            }
+            if let Ok(sellers) = doc.get_array("sellers") {
+                for s in sellers {
+                    if let Some(addr) = s.as_str() {
+                        unique_traders.insert(addr.to_string());
+                    }
+                }
+            }
+
+            (total_volume, unique_traders.len() as u64, trade_count)
+        } else {
+            ("0".to_string(), 0, 0)
+        };
+
+        Ok(TradingPairStats {
+            pair_id: pair_id.to_string(),
+            liquidity,
+            volume_24h,
+            traders_24h,
+            trades_24h,
+        })
+    }
+}
+
+/// Matcher 统计信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatcherStats {
+    /// Matcher 地址
+    pub submitter: String,
+    /// 提交次数
+    pub submission_count: u64,
+    /// 处理的请求总数
+    pub total_processed: u64,
+    /// 累计手续费 (quote token, 如 USDC)
+    pub total_fees: String,
+    /// 最后提交时间
+    pub last_submission: String,
+}
+
+/// 交易对统计信息
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TradingPairStats {
+    /// 交易对 ID
+    pub pair_id: String,
+    /// 流动性 (挂单总价值，quote token)
+    pub liquidity: String,
+    /// 24h 交易量 (quote token)
+    pub volume_24h: String,
+    /// 24h 独立交易者数量
+    pub traders_24h: u64,
+    /// 24h 交易笔数
+    pub trades_24h: u64,
 }

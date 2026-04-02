@@ -63,7 +63,7 @@ contract VerifyResultsScript is Script {
         if (bidHead != 0) {
             console.log("");
             console.log(unicode"💰 Bid 价格层级 (买单):");
-            _printPriceLevels(orderbook, bidHead, false, 5);
+            _printPriceLevels(orderbook, pairId, bidHead, false, 5);
         } else {
             console.log("");
             console.log(unicode"💰 Bid 价格层级: (空)");
@@ -73,7 +73,7 @@ contract VerifyResultsScript is Script {
         if (askHead != 0) {
             console.log("");
             console.log(unicode"💵 Ask 价格层级 (卖单):");
-            _printPriceLevels(orderbook, askHead, true, 5);
+            _printPriceLevels(orderbook, pairId, askHead, true, 5);
         } else {
             console.log("");
             console.log(unicode"💵 Ask 价格层级: (空)");
@@ -373,6 +373,7 @@ contract VerifyResultsScript is Script {
 
     function _printPriceLevels(
         OrderBook orderbook,
+        bytes32 pairId,
         uint256 startPrice,
         bool isAsk,
         uint256 maxLevels
@@ -380,7 +381,7 @@ contract VerifyResultsScript is Script {
         uint256 currentPrice = startPrice;
 
         for (uint256 i = 0; i < maxLevels && currentPrice != 0; i++) {
-            OrderBook.PriceLevel memory level = orderbook.getPriceLevel(currentPrice, isAsk);
+            OrderBook.PriceLevel memory level = orderbook.getPriceLevel(pairId, currentPrice, isAsk);
 
             uint256 priceWhole = level.price / PRICE_DECIMALS;
 

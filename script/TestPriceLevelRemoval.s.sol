@@ -170,7 +170,7 @@ contract VerifyPriceLevelRemoval is Script {
 
         // 检查 Ask 2100 是否还存在
         uint256 testPrice = 2100 * PRICE_DECIMALS;
-        OrderBook.PriceLevel memory level = orderbook.getPriceLevel(testPrice, true);
+        OrderBook.PriceLevel memory level = orderbook.getPriceLevel(pairId, testPrice, true);
 
         console.log(unicode"");
         console.log(unicode"🔍 检查 Ask 2100 PriceLevel:");
@@ -189,7 +189,7 @@ contract VerifyPriceLevelRemoval is Script {
         bool hasZeroVolume = false;
 
         while (currentPrice != 0 && count < 10) {
-            OrderBook.PriceLevel memory pl = orderbook.getPriceLevel(currentPrice, true);
+            OrderBook.PriceLevel memory pl = orderbook.getPriceLevel(pairId, currentPrice, true);
             console.log("  Price: %d USDC, Volume: %d, HeadOrderId: %d",
                 currentPrice / PRICE_DECIMALS, pl.totalVolume, pl.headOrderId);
 
@@ -212,7 +212,7 @@ contract VerifyPriceLevelRemoval is Script {
         count = 0;
 
         while (currentPrice != 0 && count < 10) {
-            OrderBook.PriceLevel memory pl = orderbook.getPriceLevel(currentPrice, false);
+            OrderBook.PriceLevel memory pl = orderbook.getPriceLevel(pairId, currentPrice, false);
             console.log("  Price: %d USDC, Volume: %d, HeadOrderId: %d",
                 currentPrice / PRICE_DECIMALS, pl.totalVolume, pl.headOrderId);
 

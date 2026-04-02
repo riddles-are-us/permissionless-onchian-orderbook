@@ -124,7 +124,7 @@ max_iterations = 50  # matchAll 调用时的最大撮合次数
 [executor]
 private_key = "0x..."
 gas_price_gwei = 1
-gas_limit = 5000000
+gas_limit = 15000000
 
 [mongodb]
 enabled = true

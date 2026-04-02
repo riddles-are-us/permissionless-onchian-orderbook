@@ -10,6 +10,7 @@ import "./IAccount.sol";
 interface IOrderBook {
     function orderTradingPairs(uint256 orderId) external view returns (bytes32);
     function isOrderCancellable(uint256 orderId) external view returns (bool);
+    function getOrderTrader(uint256 orderId) external view returns (address);
 }
 
 /**
@@ -68,6 +69,12 @@ contract Sequencer {
     // 用途：验证撤单请求时检查订单是否存在于OrderBook中
     mapping(uint256 => bool) public ordersInBook;
 
+    // 待处理的撤单请求追踪
+    // - 当撤单请求被提交时设为 true
+    // - 当撤单请求被处理后设为 false
+    // 用途：防止重复提交撤单请求
+    mapping(uint256 => bool) public pendingRemoveRequests;
+
     // 常量表示空节点
     uint256 constant EMPTY = 0;
 
@@ -101,6 +108,7 @@ contract Sequencer {
     event OrderInsertedToBook(uint256 indexed orderId);
     event OrderBookSet(address indexed orderBook);
     event AccountSet(address indexed account);
+    event PendingRemoveCleared(uint256 indexed orderId);
 
     // 修饰器
     modifier onlyOrderBook() {
@@ -235,8 +243,17 @@ contract Sequencer {
      * @return requestId 请求ID
      */
     function requestRemoveOrder(uint256 orderIdToRemove) external returns (uint256 requestId) {
+        // 检查是否已有待处理的撤单请求
+        require(!pendingRemoveRequests[orderIdToRemove], "Remove request already pending");
+
         // 验证订单存在且在OrderBook中
         require(ordersInBook[orderIdToRemove], "Order not in book");
+
+        // 验证订单所有权
+        require(
+            IOrderBook(orderBook).getOrderTrader(orderIdToRemove) == msg.sender,
+            "Not order owner"
+        );
 
         // 从OrderBook获取订单的tradingPair
         bytes32 tradingPair = IOrderBook(orderBook).orderTradingPairs(orderIdToRemove);
@@ -248,8 +265,8 @@ contract Sequencer {
             "Order is still in uncancellable period"
         );
 
-        // 验证订单所有权（通过OrderBook查询）
-        // OrderBook会在处理时验证订单所有权
+        // 标记为待处理
+        pendingRemoveRequests[orderIdToRemove] = true;
 
         // 创建撤单请求
         requestId = _createRequest(
@@ -338,7 +355,11 @@ contract Sequencer {
         } else if (request.requestType == uint8(RequestType.RemoveOrder)) {
             // 撤单请求：订单已从OrderBook移除，标记为 false
             // 注意：撤单请求复用 price 字段存储 orderIdToRemove
-            ordersInBook[request.price] = false;
+            uint256 orderIdToRemove = request.price;
+            ordersInBook[orderIdToRemove] = false;
+            // 清除 pending 状态
+            pendingRemoveRequests[orderIdToRemove] = false;
+            emit PendingRemoveCleared(orderIdToRemove);
         }
 
         uint256 nextRequestId = request.nextRequestId;
@@ -358,6 +379,29 @@ contract Sequencer {
 
         // 删除请求数据
         delete queuedRequests[requestId];
+    }
+
+    /**
+     * @notice 清除订单的 pending remove 状态（当订单被完全成交时由 OrderBook 调用）
+     * @param orderId 订单ID
+     */
+    function clearPendingRemove(uint256 orderId) external onlyOrderBook {
+        if (pendingRemoveRequests[orderId]) {
+            pendingRemoveRequests[orderId] = false;
+            emit PendingRemoveCleared(orderId);
+        }
+    }
+
+    /**
+     * @notice 标记订单已从 OrderBook 移除（当订单被完全成交时由 OrderBook 调用）
+     * @param orderId 订单ID
+     */
+    function markOrderRemovedFromBook(uint256 orderId) external onlyOrderBook {
+        ordersInBook[orderId] = false;
+        if (pendingRemoveRequests[orderId]) {
+            pendingRemoveRequests[orderId] = false;
+            emit PendingRemoveCleared(orderId);
+        }
     }
 
     /**

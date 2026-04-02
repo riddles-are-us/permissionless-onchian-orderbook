@@ -1,0 +1,253 @@
+Compiling 5 files with Solc 0.8.20
+Solc 0.8.20 finished in 44.46s
+Compiler run successful with warnings:
+Warning (2519): This declaration shadows an existing declaration.
+   --> Sequencer.sol:319:9:
+    |
+319 |         uint256 nextRequestId = request.nextRequestId;
+    |         ^^^^^^^^^^^^^^^^^^^^^
+Note: The shadowed declaration is here:
+  --> Sequencer.sol:61:5:
+   |
+61 |     uint256 public nextRequestId = 1;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Warning (2519): This declaration shadows an existing declaration.
+   --> test/GasTest.t.sol:257:13:
+    |
+257 |             uint256[] memory requestIds = new uint256[](1);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The shadowed declaration is here:
+   --> test/GasTest.t.sol:291:9:
+    |
+291 |         uint256[] memory requestIds = new uint256[](orderCount);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Warning (2519): This declaration shadows an existing declaration.
+   --> test/GasTest.t.sol:258:13:
+    |
+258 |             uint256[] memory insertAfter = new uint256[](1);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The shadowed declaration is here:
+   --> test/GasTest.t.sol:292:9:
+    |
+292 |         uint256[] memory insertAfter = new uint256[](orderCount);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Warning (2519): This declaration shadows an existing declaration.
+   --> test/GasTest.t.sol:259:13:
+    |
+259 |             uint256[] memory insertAfterOrders = new uint256[](1);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The shadowed declaration is here:
+   --> test/GasTest.t.sol:293:9:
+    |
+293 |         uint256[] memory insertAfterOrders = new uint256[](orderCount);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Warning (2519): This declaration shadows an existing declaration.
+   --> test/GasTest.t.sol:266:13:
+    |
+266 |             uint256 gasBefore = gasleft();
+    |             ^^^^^^^^^^^^^^^^^
+Note: The shadowed declaration is here:
+   --> test/GasTest.t.sol:302:9:
+    |
+302 |         uint256 gasBefore = gasleft();
+    |         ^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> OrderBook.sol:211:13:
+    |
+211 |             uint256 _unusedAmount
+    |             ^^^^^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> OrderBook.sol:429:13:
+    |
+429 |             uint256 _unusedAmount
+    |             ^^^^^^^^^^^^^^^^^^^^^
+
+Warning (5667): Unused function parameter. Remove or comment out the variable name to silence this warning.
+   --> OrderBook.sol:976:9:
+    |
+976 |         uint256 newOrderId,
+    |         ^^^^^^^^^^^^^^^^^^
+
+Warning (5667): Unused function parameter. Remove or comment out the variable name to silence this warning.
+   --> OrderBook.sol:977:9:
+    |
+977 |         bool isAsk
+    |         ^^^^^^^^^^
+
+Warning (5667): Unused function parameter. Remove or comment out the variable name to silence this warning.
+    --> OrderBook.sol:1071:9:
+     |
+1071 |         uint256 bidPrice,
+     |         ^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/AutoMatching.t.sol:108:29:
+    |
+108 |         (uint256 orderId, , uint256 amount, uint256 filledAmount, , , , ) = orderbook.orders(sellOrderId);
+    |                             ^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/AutoMatching.t.sol:170:29:
+    |
+170 |         (uint256 buyId, , , uint256 buyFilled, , , , ) = orderbook.orders(buyOrderId);
+    |                             ^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/AutoMatching.t.sol:171:30:
+    |
+171 |         (uint256 sellId, , , uint256 sellFilled, , , , ) = orderbook.orders(sellOrderId);
+    |                              ^^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/GasTest.t.sol:139:13:
+    |
+139 |             uint256 price = (2000 - i * 10) * 10**8;
+    |             ^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:126:10:
+    |
+126 |         (uint256 requestId1, uint256 orderId1) = sequencer.placeLimitOrder(
+    |          ^^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:135:10:
+    |
+135 |         (uint256 requestId2, uint256 orderId2) = sequencer.placeLimitOrder(
+    |          ^^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:144:10:
+    |
+144 |         (uint256 requestId3, uint256 orderId3) = sequencer.placeLimitOrder(
+    |          ^^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:159:10:
+    |
+159 |         (uint256 requestId4, uint256 orderId4) = sequencer.placeLimitOrder(
+    |          ^^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:168:10:
+    |
+168 |         (uint256 requestId5, uint256 orderId5) = sequencer.placeLimitOrder(
+    |          ^^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:177:10:
+    |
+177 |         (uint256 requestId6, uint256 orderId6) = sequencer.placeLimitOrder(
+    |          ^^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:233:27:
+    |
+233 |         (uint256 askHead, uint256 askTail, uint256 bidHead, uint256 bidTail, , , , ) = orderBook.orderBooks(pairId);
+    |                           ^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:233:61:
+    |
+233 |         (uint256 askHead, uint256 askTail, uint256 bidHead, uint256 bidTail, , , , ) = orderBook.orderBooks(pairId);
+    |                                                             ^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:247:27:
+    |
+247 |         (uint256 askHead, uint256 askTail, uint256 bidHead, uint256 bidTail, , , , ) = orderBook.orderBooks(pairId);
+    |                           ^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:247:61:
+    |
+247 |         (uint256 askHead, uint256 askTail, uint256 bidHead, uint256 bidTail, , , , ) = orderBook.orderBooks(pairId);
+    |                                                             ^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:284:59:
+    |
+284 |         (uint256 aliceWethAvail, uint256 aliceWethLocked, uint256 aliceWethTotal) = accountContract.getBalance(alice, address(weth));
+    |                                                           ^^^^^^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:285:59:
+    |
+285 |         (uint256 aliceUsdcAvail, uint256 aliceUsdcLocked, uint256 aliceUsdcTotal) = accountContract.getBalance(alice, address(usdc));
+    |                                                           ^^^^^^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:292:55:
+    |
+292 |         (uint256 bobWethAvail, uint256 bobWethLocked, uint256 bobWethTotal) = accountContract.getBalance(bob, address(weth));
+    |                                                       ^^^^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:293:55:
+    |
+293 |         (uint256 bobUsdcAvail, uint256 bobUsdcLocked, uint256 bobUsdcTotal) = accountContract.getBalance(bob, address(usdc));
+    |                                                       ^^^^^^^^^^^^^^^^^^^^
+
+Warning (2072): Unused local variable.
+   --> test/OrderBook.t.sol:344:10:
+    |
+344 |         (uint256 requestId, uint256 orderId) = sequencer.placeMarketOrder(
+    |          ^^^^^^^^^^^^^^^^^
+
+Script ran successfully.
+
+== Logs ==
+  Deploying contracts with address: 0xB3C259f1235A50Bd0B8aA2E588648c106F6F3816
+  Deployer balance: 2740790676280270145
+  
+=== Deploying Tokens ===
+  WETH deployed at: 0xd33b979B2B670981a41Cc7F884fe4C546F8f086F
+  USDC deployed at: 0xFD7ca13A85BbA1e9C465c8Cc80D9e02A6C773442
+  
+=== Deploying Account ===
+  Account deployed at: 0x989762108c68E9A6B0701826Af9B7Da6Ca05a88f
+  
+=== Deploying OrderBook ===
+  OrderBook deployed at: 0xa0E3100DaB93E5cCdD57b0f143F1378598799E1C
+  
+=== Deploying Sequencer ===
+  Sequencer deployed at: 0x2B5c82A7569E5Ad08aED541Ef2d8508F75033cD8
+  
+=== Configuring Contracts ===
+  Account.setOrderBook() called
+  Account.setSequencer() called
+  OrderBook.setSequencer() called
+  OrderBook.setAccount() called
+  Sequencer.setAccount() called
+  Sequencer.setOrderBook() called
+  
+=== Registering Trading Pair ===
+  Trading pair WETH/USDC registered
+  
+=== Deployment Summary ===
+  WETH:      0xd33b979B2B670981a41Cc7F884fe4C546F8f086F
+  USDC:      0xFD7ca13A85BbA1e9C465c8Cc80D9e02A6C773442
+  Account:   0x989762108c68E9A6B0701826Af9B7Da6Ca05a88f
+  OrderBook: 0xa0E3100DaB93E5cCdD57b0f143F1378598799E1C
+  Sequencer: 0x2B5c82A7569E5Ad08aED541Ef2d8508F75033cD8
+  Pair ID:   0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816
+  
+Deployment addresses saved to deployments.json
+
+SKIPPING ON CHAIN SIMULATION.
+
+
+==========================
+
+ONCHAIN EXECUTION COMPLETE & SUCCESSFUL.
+
+Transactions saved to: /mnt/d/Dev/permissionless-ord-book/permissionless-onchian-orderbook/broadcast/Deploy.s.sol/11155111/run-latest.json
+
+Sensitive values saved to: /mnt/d/Dev/permissionless-ord-book/permissionless-onchian-orderbook/cache_forge/Deploy.s.sol/11155111/run-latest.json
+

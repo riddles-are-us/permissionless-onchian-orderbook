@@ -126,7 +126,7 @@ trading_pair = "$pair_id"
 [executor]
 private_key = "$DEPLOYER_KEY"
 gas_price_gwei = 1
-gas_limit = 5000000
+gas_limit = 15000000
 
 [matching]
 max_batch_size = 10

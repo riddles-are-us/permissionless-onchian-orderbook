@@ -1,9 +1,9 @@
 use crate::config::Config;
-use crate::contracts::{OrderBook, Sequencer};
+use crate::contracts::{Account, ERC20, OrderBook, Sequencer};
 use crate::contracts::order_book::OrderBookEvents;
 use crate::contracts::sequencer::SequencerEvents;
 use crate::orderbook_simulator::{SimOrder, SimPriceLevel};
-use crate::state::GlobalState;
+use crate::state::{GlobalState, TradingPairMetadata};
 use crate::storage::{MongoStorage, OrderStatus, StoredOrder, StoredOrderType, StoredTrade, BatchSubmission};
 use crate::types::*;
 use anyhow::{Context, Result};
@@ -21,6 +21,7 @@ pub struct StateSynchronizer {
     provider: Arc<Provider<Ws>>,
     sequencer: Sequencer<Provider<Ws>>,
     orderbook: OrderBook<Provider<Ws>>,
+    account: Account<Provider<Ws>>,
     synced_block: u64,
     storage: Option<MongoStorage>,
 }
@@ -36,9 +37,11 @@ impl StateSynchronizer {
         // 创建合约实例
         let sequencer_addr: Address = config.contracts.sequencer.parse()?;
         let orderbook_addr: Address = config.contracts.orderbook.parse()?;
+        let account_addr: Address = config.contracts.account.parse()?;
 
         let sequencer = Sequencer::new(sequencer_addr, provider.clone());
         let orderbook = OrderBook::new(orderbook_addr, provider.clone());
+        let account = Account::new(account_addr, provider.clone());
 
         // 确定起始区块：如果配置为0，则自动检测合约部署区块
         let start_block = if config.sync.start_block == 0 {
@@ -55,6 +58,7 @@ impl StateSynchronizer {
             provider,
             sequencer,
             orderbook,
+            account,
             synced_block: start_block,
             storage,
         })
@@ -131,8 +135,7 @@ impl StateSynchronizer {
         self.sync_match_id().await?;
 
         // 同步 OrderBook 状态到 GlobalState.orderbook
-        // TODO: 临时注释掉，改用 event sync 来重建订单簿状态以验证 event sync 逻辑
-        // self.sync_orderbook_state().await?;
+        self.sync_orderbook_state().await?;
 
         // 更新 synced_block 为当前区块，watch_events 会从 current_block + 1 开始监听
         // 在 minimal sync 模式下，不处理历史事件
@@ -160,8 +163,7 @@ impl StateSynchronizer {
         self.sync_sequencer_state(current_block).await?;
 
         // 同步 OrderBook 状态到 GlobalState.orderbook
-        // TODO: 临时注释掉，改用 event sync 来重建订单簿状态以验证 event sync 逻辑
-        // self.sync_orderbook_state().await?;
+        self.sync_orderbook_state().await?;
 
         // 同步 matchId
         self.sync_match_id().await?;
@@ -252,29 +254,159 @@ impl StateSynchronizer {
         Ok(())
     }
 
-    /// 同步 OrderBook 状态到 GlobalState.orderbook
+    /// 从 Account 合约发现所有已注册的交易对
+    async fn discover_trading_pairs(&self) -> Result<Vec<[u8; 32]>> {
+        let from_block = self.synced_block;
+        let current_block = self.provider.get_block_number().await?.as_u64();
+
+        info!("🔍 Discovering trading pairs from TradingPairRegistered events (block {} to {})...", from_block, current_block);
+
+        let events = self.account
+            .trading_pair_registered_filter()
+            .from_block(from_block)
+            .to_block(current_block)
+            .query()
+            .await?;
+
+        let mut pairs: Vec<[u8; 32]> = Vec::new();
+        for event in events {
+            // 读取代币 symbol 和 decimals
+            let (base_symbol, base_decimals) = self.get_token_info(event.base_token).await
+                .unwrap_or_else(|_| ("???".to_string(), 18));
+            let (quote_symbol, quote_decimals) = self.get_token_info(event.quote_token).await
+                .unwrap_or_else(|_| ("???".to_string(), 6));
+
+            let ticker = format!("{}/{}", base_symbol, quote_symbol);
+
+            info!(
+                "  📋 Found trading pair: {} (0x{})",
+                ticker,
+                hex::encode(&event.trading_pair[..8])
+            );
+            info!(
+                "      baseToken={:?} ({}, {} decimals)",
+                event.base_token, base_symbol, base_decimals
+            );
+            info!(
+                "      quoteToken={:?} ({}, {} decimals)",
+                event.quote_token, quote_symbol, quote_decimals
+            );
+
+            // 存储元数据
+            let metadata = TradingPairMetadata {
+                pair_id: event.trading_pair,
+                base_token: event.base_token,
+                quote_token: event.quote_token,
+                base_symbol,
+                quote_symbol,
+                base_decimals,
+                quote_decimals,
+                ticker,
+            };
+            self.state.add_pair_metadata(metadata);
+
+            pairs.push(event.trading_pair);
+        }
+
+        info!("  ✅ Discovered {} trading pairs from chain", pairs.len());
+        Ok(pairs)
+    }
+
+    /// 获取 ERC20 代币的 symbol 和 decimals
+    async fn get_token_info(&self, token_address: Address) -> Result<(String, u8)> {
+        let token = ERC20::new(token_address, self.provider.clone());
+
+        let symbol = token.symbol().call().await
+            .unwrap_or_else(|_| "???".to_string());
+        let decimals = token.decimals().call().await
+            .unwrap_or(18);
+
+        Ok((symbol, decimals))
+    }
+
+    /// 同步 OrderBook 状态到 GlobalState（支持多交易对）
     async fn sync_orderbook_state(&self) -> Result<()> {
         debug!("Syncing OrderBook state to GlobalState...");
 
-        // 从配置中读取交易对
-        let pair_id = &self.config.contracts.trading_pair;
-        if pair_id.is_empty() {
-            warn!("No trading pair configured");
+        // 获取所有配置的交易对
+        let mut trading_pairs = self.config.get_trading_pairs();
+
+        // 如果配置为空，自动从链上发现交易对
+        if trading_pairs.is_empty() {
+            info!("📡 No trading pairs configured, auto-discovering from chain...");
+            trading_pairs = self.discover_trading_pairs().await?;
+        } else {
+            // 从配置读取的交易对，也需要获取元数据
+            info!("📡 Loading metadata for {} configured trading pairs...", trading_pairs.len());
+            self.load_trading_pair_metadata(&trading_pairs).await?;
+        }
+
+        if trading_pairs.is_empty() {
+            warn!("No trading pairs found (neither configured nor discovered)");
             return Ok(());
         }
 
-        if let Ok(bytes) = hex::decode(pair_id.trim_start_matches("0x")) {
-            if bytes.len() == 32 {
-                let mut trading_pair = [0u8; 32];
-                trading_pair.copy_from_slice(&bytes);
-                self.sync_trading_pair_orderbook(&trading_pair).await?;
-            } else {
-                warn!("Invalid trading pair length: {}", bytes.len());
-            }
-        } else {
-            warn!("Failed to decode trading pair: {}", pair_id);
+        // 初始化 GlobalState 的交易对
+        self.state.init_trading_pairs(trading_pairs.clone());
+
+        // 同步每个交易对的订单簿
+        for trading_pair in &trading_pairs {
+            // 获取 ticker 用于日志
+            let ticker = self.state.get_pair_metadata(trading_pair)
+                .map(|m| m.ticker)
+                .unwrap_or_else(|| format!("0x{}", hex::encode(&trading_pair[..8])));
+            info!("📊 Syncing orderbook for pair {}...", ticker);
+            self.sync_trading_pair_orderbook(trading_pair).await?;
         }
 
+        Ok(())
+    }
+
+    /// 为配置的交易对加载元数据（从 Account 合约读取）
+    async fn load_trading_pair_metadata(&self, trading_pairs: &[[u8; 32]]) -> Result<()> {
+        for pair_id in trading_pairs {
+            // 从 Account 合约读取交易对信息
+            let pair_info = self.account.trading_pairs(*pair_id).call().await;
+
+            match pair_info {
+                Ok((base_token, quote_token, _is_active)) => {
+                    if base_token == Address::zero() {
+                        warn!("  ⚠️ Trading pair 0x{} not registered in Account contract", hex::encode(&pair_id[..8]));
+                        continue;
+                    }
+
+                    // 读取代币 symbol 和 decimals
+                    let (base_symbol, base_decimals) = self.get_token_info(base_token).await
+                        .unwrap_or_else(|_| ("???".to_string(), 18));
+                    let (quote_symbol, quote_decimals) = self.get_token_info(quote_token).await
+                        .unwrap_or_else(|_| ("???".to_string(), 6));
+
+                    let ticker = format!("{}/{}", base_symbol, quote_symbol);
+
+                    info!(
+                        "  📋 Loaded metadata for pair: {} (0x{})",
+                        ticker,
+                        hex::encode(&pair_id[..8])
+                    );
+
+                    // 存储元数据
+                    let metadata = TradingPairMetadata {
+                        pair_id: *pair_id,
+                        base_token,
+                        quote_token,
+                        base_symbol,
+                        quote_symbol,
+                        base_decimals,
+                        quote_decimals,
+                        ticker,
+                    };
+                    self.state.add_pair_metadata(metadata);
+                }
+                Err(e) => {
+                    warn!("  ⚠️ Failed to load metadata for pair 0x{}: {}", hex::encode(&pair_id[..8]), e);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -296,6 +428,27 @@ impl StateSynchronizer {
 
         let from_block = self.config.sync.start_block;
         info!("📜 Syncing historical events from block {} to {}", from_block, to_block);
+
+        // 获取当前区块时间戳，用于估算历史区块时间
+        // Sepolia 平均出块时间约 12 秒
+        let current_block_data = self.provider.get_block(to_block).await?;
+        let current_timestamp = current_block_data
+            .map(|b| b.timestamp.as_u64())
+            .unwrap_or_else(|| std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs());
+        const BLOCK_TIME_SECS: u64 = 12; // Sepolia average block time
+
+        // 辅助函数：根据区块号估算时间戳
+        let estimate_timestamp = |block_number: u64| -> u64 {
+            if block_number >= to_block {
+                current_timestamp
+            } else {
+                let blocks_diff = to_block - block_number;
+                current_timestamp.saturating_sub(blocks_diff * BLOCK_TIME_SECS)
+            }
+        };
 
         // 定义统一的事件枚举，用于排序
         #[derive(Debug)]
@@ -421,6 +574,21 @@ impl StateSynchronizer {
                         _ => StoredOrderType::Limit,
                     };
 
+                    // 从事件中提取链上时间戳和不可撤销时长
+                    // 使用 low_u64() 避免溢出 panic
+                    let chain_created_at = place_order.timestamp.low_u64();
+                    let uncancellable_duration = place_order.uncancellable_duration.low_u64();
+                    let uncancellable_until = if uncancellable_duration > 0 {
+                        Some(chain_created_at + uncancellable_duration)
+                    } else {
+                        None
+                    };
+
+                    // 使用区块号估算时间戳，而不是当前时间
+                    let estimated_timestamp_secs = estimate_timestamp(block_number);
+                    let timestamp_ms = (estimated_timestamp_secs * 1000) as i64;
+                    let estimated_time = BsonDateTime::from_millis(timestamp_ms);
+
                     let stored_order = StoredOrder {
                         order_id: place_order.request_id.to_string(),
                         trading_pair: format!("0x{}", hex::encode(place_order.trading_pair)),
@@ -431,10 +599,13 @@ impl StateSynchronizer {
                         amount: place_order.amount.to_string(),
                         filled_amount: "0".to_string(),
                         status: OrderStatus::Pending,
-                        created_at: BsonDateTime::now(),
-                        updated_at: BsonDateTime::now(),
+                        created_at: estimated_time,
+                        updated_at: estimated_time,
                         block_number,
                         tx_hash: None,
+                        chain_created_at,
+                        uncancellable_duration,
+                        uncancellable_until,
                     };
 
                     if let Err(e) = storage.upsert_order(&stored_order).await {
@@ -446,10 +617,11 @@ impl StateSynchronizer {
                     let trading_pair_hex = format!("0x{}", hex::encode(trade.trading_pair));
                     let price_str = trade.price.to_string();
                     let amount_str = trade.amount.to_string();
-                    let timestamp_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64;
+
+                    // 使用区块号估算时间戳
+                    let estimated_timestamp_secs = estimate_timestamp(block_number);
+                    let timestamp_ms = (estimated_timestamp_secs * 1000) as i64;
+                    let traded_at = BsonDateTime::from_millis(timestamp_ms);
 
                     let stored_trade = StoredTrade {
                         trade_id: format!(
@@ -465,7 +637,7 @@ impl StateSynchronizer {
                         seller: format!("{:?}", trade.seller).to_lowercase(),
                         price: price_str.clone(),
                         amount: amount_str.clone(),
-                        traded_at: BsonDateTime::now(),
+                        traded_at,
                         block_number,
                         tx_hash: None,
                     };
@@ -524,12 +696,16 @@ impl StateSynchronizer {
                 }
 
                 HistoricalEvent::BatchProcessed(batch, block_number, _, tx_hash) => {
+                    // 使用区块号估算时间戳
+                    let estimated_timestamp_secs = estimate_timestamp(block_number);
+                    let submitted_at = BsonDateTime::from_millis((estimated_timestamp_secs * 1000) as i64);
+
                     let submission = BatchSubmission {
                         match_id: batch.match_id.to_string(),
                         submitter: format!("{:?}", batch.submitter).to_lowercase(),
-                        processed_count: batch.processed_count.as_u64(),
+                        processed_count: batch.processed_count.low_u64(),
                         submitter_reward: batch.total_fees.to_string(),
-                        submitted_at: BsonDateTime::now(),
+                        submitted_at,
                         block_number,
                         tx_hash: format!("{:?}", tx_hash),
                     };
@@ -553,13 +729,13 @@ impl StateSynchronizer {
         let bid_tail = orderbook_data.3;
 
         info!(
-            "📊 Trading pair: askHead={}, askTail={}, bidHead={}, bidTail={}",
+            "📊 Trading pair 0x{}: askHead={}, askTail={}, bidHead={}, bidTail={}",
+            hex::encode(&trading_pair[..8]),
             ask_head, ask_tail, bid_head, bid_tail
         );
 
-        // 更新 GlobalState.orderbook 的头尾指针
-        {
-            let mut orderbook = self.state.orderbook.write();
+        // 更新该交易对的 orderbook 的头尾指针
+        if let Some(mut orderbook) = self.state.get_orderbook_mut(trading_pair) {
             orderbook.ask_head = ask_head;
             orderbook.ask_tail = ask_tail;
             orderbook.bid_head = bid_head;
@@ -583,7 +759,7 @@ impl StateSynchronizer {
 
         while !current_price.is_zero() {
             // 获取价格层级数据
-            let level_data = self.orderbook.get_price_level(current_price, is_ask).call().await?;
+            let level_data = self.orderbook.get_price_level(*trading_pair, current_price, is_ask).call().await?;
 
             let sim_level = SimPriceLevel {
                 price: level_data.price,
@@ -598,9 +774,8 @@ impl StateSynchronizer {
             let orders_synced = self.sync_orders_at_price_level(&sim_level, is_ask, trading_pair).await?;
             order_count += orders_synced;
 
-            // 添加到 GlobalState.orderbook
-            {
-                let mut orderbook = self.state.orderbook.write();
+            // 添加到该交易对的 orderbook
+            if let Some(mut orderbook) = self.state.get_orderbook_mut(trading_pair) {
                 orderbook.add_existing_price_level(sim_level.clone(), is_ask);
             }
 
@@ -629,23 +804,25 @@ impl StateSynchronizer {
             // 获取订单数据
             let order_data = self.orderbook.orders(current_order_id).call().await?;
 
+            // Order ABI indices (including isAsk):
+            // 0=id, 1=trader, 2=amount, 3=filledAmount, 4=isMarketOrder, 5=isAsk,
+            // 6=priceLevel, 7=createdAt, 8=uncancellableDuration, 9=nextOrderId, 10=prevOrderId
             let sim_order = SimOrder {
                 id: order_data.0,
                 amount: order_data.2,
                 filled_amount: order_data.3,
                 is_market_order: order_data.4,
-                is_ask,
-                price_level: order_data.5,
-                next_order_id: order_data.6,
-                prev_order_id: order_data.7,
+                is_ask: order_data.5,
+                price_level: order_data.6,
+                next_order_id: order_data.9,
+                prev_order_id: order_data.10,
             };
 
             let next_id = sim_order.next_order_id;
             let trader = order_data.1; // trader address
 
-            // 添加到 GlobalState.orderbook
-            {
-                let mut orderbook = self.state.orderbook.write();
+            // 添加到该交易对的 orderbook
+            if let Some(mut orderbook) = self.state.get_orderbook_mut(trading_pair) {
                 orderbook.add_existing_order(sim_order.clone());
             }
 
@@ -658,6 +835,21 @@ impl StateSynchronizer {
                 } else {
                     OrderStatus::Filled
                 };
+
+                // 从链上订单数据中提取 createdAt 和 uncancellableDuration
+                // order_data ABI索引: 0=id, 1=trader, 2=amount, 3=filledAmount, 4=isMarketOrder, 5=isAsk,
+                //                     6=priceLevel, 7=createdAt, 8=uncancellableDuration, 9=nextOrderId, 10=prevOrderId
+                // 使用 low_u64() 避免溢出 panic
+                let chain_created_at = order_data.7.low_u64();
+                let uncancellable_duration = order_data.8.low_u64();
+                let uncancellable_until = if uncancellable_duration > 0 {
+                    Some(chain_created_at + uncancellable_duration)
+                } else {
+                    None
+                };
+
+                // 使用链上时间戳，而不是当前时间
+                let chain_time = BsonDateTime::from_millis((chain_created_at * 1000) as i64);
 
                 let stored_order = StoredOrder {
                     order_id: current_order_id.to_string(),
@@ -673,10 +865,13 @@ impl StateSynchronizer {
                     amount: sim_order.amount.to_string(),
                     filled_amount: sim_order.filled_amount.to_string(),
                     status,
-                    created_at: BsonDateTime::now(),
-                    updated_at: BsonDateTime::now(),
+                    created_at: chain_time,
+                    updated_at: chain_time,
                     block_number: self.synced_block,
                     tx_hash: None,
+                    chain_created_at,
+                    uncancellable_duration,
+                    uncancellable_until,
                 };
 
                 if let Err(e) = storage.upsert_order(&stored_order).await {
@@ -805,60 +1000,98 @@ impl StateSynchronizer {
 
         match event {
             OrderBookEvents::OrderInsertedFilter(inserted) => {
+                // 获取交易对
+                let trading_pair: [u8; 32] = inserted.trading_pair;
+
+                // 检查是否是支持的交易对
+                if !state.is_pair_supported(&trading_pair) {
+                    debug!(
+                        "Skipping OrderInserted for unsupported pair 0x{}",
+                        hex::encode(&trading_pair[..8])
+                    );
+                    return Ok(());
+                }
+
                 info!(
-                    "📦 OrderInserted: orderId={}, price={}, amount={}, isAsk={}",
+                    "📦 OrderInserted: pair=0x{}, orderId={}, price={}, amount={}, isAsk={}",
+                    hex::encode(&trading_pair[..8]),
                     inserted.order_id,
                     inserted.price,
                     inserted.amount,
                     inserted.is_ask
                 );
 
-                let mut orderbook = state.orderbook.write();
-                let level_key = if inserted.is_ask {
-                    inserted.price
-                } else {
-                    inserted.price | (U256::one() << 255)
-                };
+                if let Some(mut orderbook) = state.get_orderbook_mut(&trading_pair) {
+                    let level_key = if inserted.is_ask {
+                        inserted.price
+                    } else {
+                        inserted.price | (U256::one() << 255)
+                    };
 
-                let old_tail = orderbook.price_levels.get(&level_key)
-                    .map(|l| l.tail_order_id)
-                    .unwrap_or(U256::zero());
+                    let old_tail = orderbook.price_levels.get(&level_key)
+                        .map(|l| l.tail_order_id)
+                        .unwrap_or(U256::zero());
 
-                if !old_tail.is_zero() {
-                    if let Some(tail_order) = orderbook.orders.get_mut(&old_tail) {
-                        tail_order.next_order_id = inserted.order_id;
+                    if !old_tail.is_zero() {
+                        if let Some(tail_order) = orderbook.orders.get_mut(&old_tail) {
+                            tail_order.next_order_id = inserted.order_id;
+                        }
                     }
+
+                    if let Some(level) = orderbook.price_levels.get_mut(&level_key) {
+                        if old_tail.is_zero() {
+                            level.head_order_id = inserted.order_id;
+                        }
+                        level.tail_order_id = inserted.order_id;
+                        level.total_volume += inserted.amount;
+                    }
+
+                    let sim_order = SimOrder {
+                        id: inserted.order_id,
+                        amount: inserted.amount,
+                        filled_amount: U256::zero(),
+                        is_market_order: false,
+                        is_ask: inserted.is_ask,
+                        price_level: inserted.price,
+                        next_order_id: U256::zero(),
+                        prev_order_id: old_tail,
+                    };
+                    orderbook.orders.insert(inserted.order_id, sim_order);
+
+                    debug!(
+                        "  Added order {} to simulator (price={}, is_ask={})",
+                        inserted.order_id, inserted.price, inserted.is_ask
+                    );
                 }
 
-                if let Some(level) = orderbook.price_levels.get_mut(&level_key) {
-                    if old_tail.is_zero() {
-                        level.head_order_id = inserted.order_id;
+                // Update order status in MongoDB
+                if let Some(ref storage) = storage {
+                    if let Err(e) = storage.update_order_status(
+                        &inserted.order_id.to_string(),
+                        OrderStatus::Active,
+                        None,
+                    ).await {
+                        warn!("Failed to update order status in MongoDB: {}", e);
                     }
-                    level.tail_order_id = inserted.order_id;
-                    level.total_volume += inserted.amount;
                 }
-
-                let sim_order = SimOrder {
-                    id: inserted.order_id,
-                    amount: inserted.amount,
-                    filled_amount: U256::zero(),
-                    is_market_order: false,
-                    is_ask: inserted.is_ask,
-                    price_level: inserted.price,
-                    next_order_id: U256::zero(),
-                    prev_order_id: old_tail,
-                };
-                orderbook.orders.insert(inserted.order_id, sim_order);
-
-                debug!(
-                    "  Added order {} to simulator (price={}, is_ask={})",
-                    inserted.order_id, inserted.price, inserted.is_ask
-                );
             }
 
             OrderBookEvents::PriceLevelCreatedFilter(created) => {
+                // 获取交易对
+                let trading_pair: [u8; 32] = created.trading_pair;
+
+                // 检查是否是支持的交易对
+                if !state.is_pair_supported(&trading_pair) {
+                    debug!(
+                        "Skipping PriceLevelCreated for unsupported pair 0x{}",
+                        hex::encode(&trading_pair[..8])
+                    );
+                    return Ok(());
+                }
+
                 info!(
-                    "📊 PriceLevelCreated: price={}, isAsk={}",
+                    "📊 PriceLevelCreated: pair=0x{}, price={}, isAsk={}",
+                    hex::encode(&trading_pair[..8]),
                     created.price,
                     created.is_ask
                 );
@@ -872,174 +1105,192 @@ impl StateSynchronizer {
                     prev_price: U256::zero(),
                 };
 
-                let mut orderbook = state.orderbook.write();
-                orderbook.add_existing_price_level(new_level, created.is_ask);
+                if let Some(mut orderbook) = state.get_orderbook_mut(&trading_pair) {
+                    orderbook.add_existing_price_level(new_level, created.is_ask);
 
-                let level_key = if created.is_ask {
-                    created.price
-                } else {
-                    created.price | (U256::one() << 255)
-                };
-
-                // Find the correct insert position by traversing the linked list
-                // For Ask: prices are sorted low to high (head = lowest)
-                // For Bid: prices are sorted high to low (head = highest)
-                let (head, get_key): (U256, Box<dyn Fn(U256) -> U256>) = if created.is_ask {
-                    (orderbook.ask_head, Box::new(|p| p))
-                } else {
-                    (orderbook.bid_head, Box::new(|p| p | (U256::one() << 255)))
-                };
-
-                if head.is_zero() {
-                    // Empty list - this becomes both head and tail
-                    if created.is_ask {
-                        orderbook.ask_head = created.price;
-                        orderbook.ask_tail = created.price;
+                    let level_key = if created.is_ask {
+                        created.price
                     } else {
-                        orderbook.bid_head = created.price;
-                        orderbook.bid_tail = created.price;
-                    }
-                } else {
-                    // Find insert position
-                    let mut current = head;
-                    let mut prev = U256::zero();
-                    let mut insert_after = U256::zero();
+                        created.price | (U256::one() << 255)
+                    };
 
-                    while !current.is_zero() {
-                        let current_key = get_key(current);
-                        if let Some(level) = orderbook.price_levels.get(&current_key) {
-                            let should_insert_before = if created.is_ask {
-                                // Ask: insert before first level with price > new price
-                                current > created.price
-                            } else {
-                                // Bid: insert before first level with price < new price
-                                current < created.price
-                            };
+                    // Find the correct insert position by traversing the linked list
+                    // For Ask: prices are sorted low to high (head = lowest)
+                    // For Bid: prices are sorted high to low (head = highest)
+                    let (head, get_key): (U256, Box<dyn Fn(U256) -> U256>) = if created.is_ask {
+                        (orderbook.ask_head, Box::new(|p| p))
+                    } else {
+                        (orderbook.bid_head, Box::new(|p| p | (U256::one() << 255)))
+                    };
 
-                            if should_insert_before {
-                                insert_after = prev;
-                                break;
-                            }
-
-                            prev = current;
-                            current = level.next_price;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    // If we reached the end without finding insert point, insert at tail
-                    if current.is_zero() {
-                        insert_after = prev;
-                    }
-
-                    if insert_after.is_zero() {
-                        // Insert at head
-                        let old_head = head;
-                        let old_head_key = get_key(old_head);
-                        if let Some(old_head_level) = orderbook.price_levels.get_mut(&old_head_key) {
-                            old_head_level.prev_price = created.price;
-                        }
-                        if let Some(new_level) = orderbook.price_levels.get_mut(&level_key) {
-                            new_level.next_price = old_head;
-                        }
+                    if head.is_zero() {
+                        // Empty list - this becomes both head and tail
                         if created.is_ask {
                             orderbook.ask_head = created.price;
+                            orderbook.ask_tail = created.price;
                         } else {
                             orderbook.bid_head = created.price;
+                            orderbook.bid_tail = created.price;
                         }
                     } else {
-                        // Insert after insert_after
-                        let insert_after_key = get_key(insert_after);
-                        let next_price = orderbook.price_levels.get(&insert_after_key)
-                            .map(|l| l.next_price)
-                            .unwrap_or(U256::zero());
+                        // Find insert position
+                        let mut current = head;
+                        let mut prev = U256::zero();
+                        let mut insert_after = U256::zero();
 
-                        // Update new level's pointers
-                        if let Some(new_level) = orderbook.price_levels.get_mut(&level_key) {
-                            new_level.prev_price = insert_after;
-                            new_level.next_price = next_price;
+                        while !current.is_zero() {
+                            let current_key = get_key(current);
+                            if let Some(level) = orderbook.price_levels.get(&current_key) {
+                                let should_insert_before = if created.is_ask {
+                                    // Ask: insert before first level with price > new price
+                                    current > created.price
+                                } else {
+                                    // Bid: insert before first level with price < new price
+                                    current < created.price
+                                };
+
+                                if should_insert_before {
+                                    insert_after = prev;
+                                    break;
+                                }
+
+                                prev = current;
+                                current = level.next_price;
+                            } else {
+                                break;
+                            }
                         }
 
-                        // Update insert_after's next pointer
-                        if let Some(prev_level) = orderbook.price_levels.get_mut(&insert_after_key) {
-                            prev_level.next_price = created.price;
+                        // If we reached the end without finding insert point, insert at tail
+                        if current.is_zero() {
+                            insert_after = prev;
                         }
 
-                        // Update next level's prev pointer
-                        if !next_price.is_zero() {
-                            let next_key = get_key(next_price);
-                            if let Some(next_level) = orderbook.price_levels.get_mut(&next_key) {
-                                next_level.prev_price = created.price;
+                        if insert_after.is_zero() {
+                            // Insert at head
+                            let old_head = head;
+                            let old_head_key = get_key(old_head);
+                            if let Some(old_head_level) = orderbook.price_levels.get_mut(&old_head_key) {
+                                old_head_level.prev_price = created.price;
+                            }
+                            if let Some(new_level) = orderbook.price_levels.get_mut(&level_key) {
+                                new_level.next_price = old_head;
+                            }
+                            if created.is_ask {
+                                orderbook.ask_head = created.price;
+                            } else {
+                                orderbook.bid_head = created.price;
                             }
                         } else {
-                            // Insert at tail
-                            if created.is_ask {
-                                orderbook.ask_tail = created.price;
+                            // Insert after insert_after
+                            let insert_after_key = get_key(insert_after);
+                            let next_price = orderbook.price_levels.get(&insert_after_key)
+                                .map(|l| l.next_price)
+                                .unwrap_or(U256::zero());
+
+                            // Update new level's pointers
+                            if let Some(new_level) = orderbook.price_levels.get_mut(&level_key) {
+                                new_level.prev_price = insert_after;
+                                new_level.next_price = next_price;
+                            }
+
+                            // Update insert_after's next pointer
+                            if let Some(prev_level) = orderbook.price_levels.get_mut(&insert_after_key) {
+                                prev_level.next_price = created.price;
+                            }
+
+                            // Update next level's prev pointer
+                            if !next_price.is_zero() {
+                                let next_key = get_key(next_price);
+                                if let Some(next_level) = orderbook.price_levels.get_mut(&next_key) {
+                                    next_level.prev_price = created.price;
+                                }
                             } else {
-                                orderbook.bid_tail = created.price;
+                                // Insert at tail
+                                if created.is_ask {
+                                    orderbook.ask_tail = created.price;
+                                } else {
+                                    orderbook.bid_tail = created.price;
+                                }
                             }
                         }
                     }
-                }
 
-                debug!(
-                    "  Created price level {} (is_ask={})",
-                    created.price, created.is_ask
-                );
+                    debug!(
+                        "  Created price level {} (is_ask={})",
+                        created.price, created.is_ask
+                    );
+                }
             }
 
             OrderBookEvents::PriceLevelRemovedFilter(removed) => {
-                info!("🗑️  PriceLevelRemoved: price={}, isAsk={}", removed.price, removed.is_ask);
-                let mut orderbook = state.orderbook.write();
+                // 获取交易对
+                let trading_pair: [u8; 32] = removed.trading_pair;
 
-                // 直接使用 event 中的 is_ask 字段
-                if removed.is_ask {
-                    let ask_key = removed.price;
-                    if let Some(level) = orderbook.price_levels.get(&ask_key) {
-                        let prev = level.prev_price;
-                        let next = level.next_price;
-                        if !prev.is_zero() {
-                            if let Some(prev_level) = orderbook.price_levels.get_mut(&prev) {
-                                prev_level.next_price = next;
+                // 检查是否是支持的交易对
+                if !state.is_pair_supported(&trading_pair) {
+                    debug!(
+                        "Skipping PriceLevelRemoved for unsupported pair 0x{}",
+                        hex::encode(&trading_pair[..8])
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "🗑️  PriceLevelRemoved: pair=0x{}, price={}, isAsk={}",
+                    hex::encode(&trading_pair[..8]),
+                    removed.price, removed.is_ask
+                );
+
+                if let Some(mut orderbook) = state.get_orderbook_mut(&trading_pair) {
+                    // 直接使用 event 中的 is_ask 字段
+                    if removed.is_ask {
+                        let ask_key = removed.price;
+                        if let Some(level) = orderbook.price_levels.get(&ask_key) {
+                            let prev = level.prev_price;
+                            let next = level.next_price;
+                            if !prev.is_zero() {
+                                if let Some(prev_level) = orderbook.price_levels.get_mut(&prev) {
+                                    prev_level.next_price = next;
+                                }
+                            } else {
+                                orderbook.ask_head = next;
                             }
-                        } else {
-                            orderbook.ask_head = next;
-                        }
-                        if !next.is_zero() {
-                            if let Some(next_level) = orderbook.price_levels.get_mut(&next) {
-                                next_level.prev_price = prev;
+                            if !next.is_zero() {
+                                if let Some(next_level) = orderbook.price_levels.get_mut(&next) {
+                                    next_level.prev_price = prev;
+                                }
+                            } else {
+                                orderbook.ask_tail = prev;
                             }
-                        } else {
-                            orderbook.ask_tail = prev;
                         }
+                        orderbook.price_levels.remove(&ask_key);
+                        debug!("  Removed ask price level at {}", removed.price);
+                    } else {
+                        let bid_key = removed.price | (U256::one() << 255);
+                        if let Some(level) = orderbook.price_levels.get(&bid_key) {
+                            let prev = level.prev_price;
+                            let next = level.next_price;
+                            let prev_key = prev | (U256::one() << 255);
+                            let next_key = next | (U256::one() << 255);
+                            if !prev.is_zero() {
+                                if let Some(prev_level) = orderbook.price_levels.get_mut(&prev_key) {
+                                    prev_level.next_price = next;
+                                }
+                            } else {
+                                orderbook.bid_head = next;
+                            }
+                            if !next.is_zero() {
+                                if let Some(next_level) = orderbook.price_levels.get_mut(&next_key) {
+                                    next_level.prev_price = prev;
+                                }
+                            } else {
+                                orderbook.bid_tail = prev;
+                            }
+                        }
+                        orderbook.price_levels.remove(&bid_key);
+                        debug!("  Removed bid price level at {}", removed.price);
                     }
-                    orderbook.price_levels.remove(&ask_key);
-                    debug!("  Removed ask price level at {}", removed.price);
-                } else {
-                    let bid_key = removed.price | (U256::one() << 255);
-                    if let Some(level) = orderbook.price_levels.get(&bid_key) {
-                        let prev = level.prev_price;
-                        let next = level.next_price;
-                        let prev_key = prev | (U256::one() << 255);
-                        let next_key = next | (U256::one() << 255);
-                        if !prev.is_zero() {
-                            if let Some(prev_level) = orderbook.price_levels.get_mut(&prev_key) {
-                                prev_level.next_price = next;
-                            }
-                        } else {
-                            orderbook.bid_head = next;
-                        }
-                        if !next.is_zero() {
-                            if let Some(next_level) = orderbook.price_levels.get_mut(&next_key) {
-                                next_level.prev_price = prev;
-                            }
-                        } else {
-                            orderbook.bid_tail = prev;
-                        }
-                    }
-                    orderbook.price_levels.remove(&bid_key);
-                    debug!("  Removed bid price level at {}", removed.price);
                 }
             }
 
@@ -1105,8 +1356,21 @@ impl StateSynchronizer {
             }
 
             OrderBookEvents::OrderFilledFilter(filled) => {
+                // 获取交易对
+                let trading_pair: [u8; 32] = filled.trading_pair;
+
+                // 检查是否是支持的交易对
+                if !state.is_pair_supported(&trading_pair) {
+                    debug!(
+                        "Skipping OrderFilled for unsupported pair 0x{}",
+                        hex::encode(&trading_pair[..8])
+                    );
+                    return Ok(());
+                }
+
                 info!(
-                    "✅ OrderFilled: order={}, quote={}, base={}, fully_filled={}",
+                    "✅ OrderFilled: pair=0x{}, order={}, quote={}, base={}, fully_filled={}",
+                    hex::encode(&trading_pair[..8]),
                     filled.order_id,
                     filled.quote_amount,
                     filled.base_amount,
@@ -1130,19 +1394,21 @@ impl StateSynchronizer {
                     }
                 } else {
                     // 没有 MongoDB 时，从内存查询（仅限价单）
-                    let orderbook = state.orderbook.read();
-                    let is_market_bid = orderbook.orders.get(&filled.order_id)
-                        .map(|o| o.is_market_order && !o.is_ask)
-                        .unwrap_or(false);
-                    if is_market_bid {
-                        filled.quote_amount
+                    if let Some(orderbook) = state.get_orderbook(&trading_pair) {
+                        let is_market_bid = orderbook.orders.get(&filled.order_id)
+                            .map(|o| o.is_market_order && !o.is_ask)
+                            .unwrap_or(false);
+                        if is_market_bid {
+                            filled.quote_amount
+                        } else {
+                            filled.base_amount
+                        }
                     } else {
                         filled.base_amount
                     }
                 };
 
-                {
-                    let mut orderbook = state.orderbook.write();
+                if let Some(mut orderbook) = state.get_orderbook_mut(&trading_pair) {
                     if filled.is_fully_filled {
                         // Before removing the order, update the linked list in the price level
                         if let Some(order) = orderbook.orders.get(&filled.order_id) {
@@ -1206,12 +1472,71 @@ impl StateSynchronizer {
             }
 
             OrderBookEvents::OrderRemovedFilter(removed) => {
-                info!("🗑️  OrderRemoved: order={}", removed.order_id);
-                {
-                    let mut orderbook = state.orderbook.write();
-                    orderbook.orders.remove(&removed.order_id);
+                // 获取交易对
+                let trading_pair: [u8; 32] = removed.trading_pair;
+
+                // 检查是否是支持的交易对
+                if !state.is_pair_supported(&trading_pair) {
+                    debug!(
+                        "Skipping OrderRemoved for unsupported pair 0x{}",
+                        hex::encode(&trading_pair[..8])
+                    );
+                    return Ok(());
                 }
 
+                info!(
+                    "🗑️  OrderRemoved: pair=0x{}, order={}",
+                    hex::encode(&trading_pair[..8]),
+                    removed.order_id
+                );
+
+                if let Some(mut orderbook) = state.get_orderbook_mut(&trading_pair) {
+                    // Get the order info before removing it to update the linked list
+                    // Note: Market orders may not exist in orderbook.orders, so we handle that case
+                    if let Some(order) = orderbook.orders.get(&removed.order_id) {
+                        let prev_order_id = order.prev_order_id;
+                        let next_order_id = order.next_order_id;
+                        let is_ask = order.is_ask;
+                        let price_level = order.price_level;
+
+                        // Update the previous order's next pointer
+                        if !prev_order_id.is_zero() {
+                            if let Some(prev_order) = orderbook.orders.get_mut(&prev_order_id) {
+                                prev_order.next_order_id = next_order_id;
+                            }
+                        }
+
+                        // Update the next order's prev pointer
+                        if !next_order_id.is_zero() {
+                            if let Some(next_order) = orderbook.orders.get_mut(&next_order_id) {
+                                next_order.prev_order_id = prev_order_id;
+                            }
+                        }
+
+                        // Update price level head/tail if necessary
+                        let price_level_key = if is_ask {
+                            price_level
+                        } else {
+                            price_level | (U256::one() << 255)
+                        };
+
+                        if let Some(level) = orderbook.price_levels.get_mut(&price_level_key) {
+                            if level.head_order_id == removed.order_id {
+                                level.head_order_id = next_order_id;
+                            }
+                            if level.tail_order_id == removed.order_id {
+                                level.tail_order_id = prev_order_id;
+                            }
+                        }
+
+                        // Remove the order from the map
+                        orderbook.orders.remove(&removed.order_id);
+                    }
+                    // If order not found in memory (e.g., market orders), we still need to update MongoDB
+                }
+
+                // Always update MongoDB status, even if order wasn't found in memory
+                // This is important for market orders which may not be stored in the orderbook simulator
                 if let Some(ref storage) = storage {
                     if let Err(e) = storage.update_order_status(
                         &removed.order_id.to_string(),
@@ -1239,7 +1564,7 @@ impl StateSynchronizer {
                     let submission = BatchSubmission {
                         match_id: batch.match_id.to_string(),
                         submitter: format!("{:?}", batch.submitter).to_lowercase(),
-                        processed_count: batch.processed_count.as_u64(),
+                        processed_count: batch.processed_count.low_u64(),
                         submitter_reward: batch.total_fees.to_string(),
                         submitted_at: BsonDateTime::now(),
                         block_number,
@@ -1306,6 +1631,16 @@ impl StateSynchronizer {
                 state.add_request_to_tail(request);
 
                 if let Some(ref storage) = storage {
+                    // 从事件中提取链上时间戳和不可撤销时长
+                    // 使用 low_u64() 避免溢出 panic
+                    let chain_created_at = place_order.timestamp.low_u64();
+                    let uncancellable_duration = place_order.uncancellable_duration.low_u64();
+                    let uncancellable_until = if uncancellable_duration > 0 {
+                        Some(chain_created_at + uncancellable_duration)
+                    } else {
+                        None
+                    };
+
                     let stored_order = StoredOrder {
                         order_id: place_order.request_id.to_string(),
                         trading_pair: format!("0x{}", hex::encode(place_order.trading_pair)),
@@ -1323,6 +1658,9 @@ impl StateSynchronizer {
                         updated_at: BsonDateTime::now(),
                         block_number,
                         tx_hash: None,
+                        chain_created_at,
+                        uncancellable_duration,
+                        uncancellable_until,
                     };
 
                     if let Err(e) = storage.upsert_order(&stored_order).await {

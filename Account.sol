@@ -544,4 +544,59 @@ contract Account {
     function getSubmitterReward(address submitter, address token) external view returns (uint256) {
         return submitterRewards[submitter][token];
     }
+
+    /**
+     * @notice 收集灰尘资金到协议（只能由OrderBook调用）
+     * @dev 将订单完全成交后的剩余资金（低于灰尘阈值）贡献给协议
+     * @param user 用户地址
+     * @param tradingPair 交易对
+     * @param isAsk 是否为卖单
+     * @param price 价格（市价单为0）
+     * @param amount 剩余数量
+     * @param orderId 订单ID
+     */
+    function collectDustToProtocol(
+        address user,
+        bytes32 tradingPair,
+        bool isAsk,
+        uint256 price,
+        uint256 amount,
+        uint256 orderId
+    ) external onlyOrderBook {
+        if (amount == 0) return;
+
+        TradingPair storage pair = tradingPairs[tradingPair];
+        require(pair.exists, "Trading pair not registered");
+
+        address tokenToCollect;
+        uint256 amountToCollect;
+
+        if (isAsk) {
+            // 卖单：收集基础代币
+            tokenToCollect = pair.baseToken;
+            uint8 baseDecimals = IERC20(pair.baseToken).decimals();
+            amountToCollect = (amount * (10 ** baseDecimals)) / TradingConstants.AMOUNT_DECIMALS;
+        } else {
+            // 买单：收集计价代币
+            tokenToCollect = pair.quoteToken;
+            uint8 quoteDecimals = IERC20(pair.quoteToken).decimals();
+            if (price == 0) {
+                // 市价买单
+                uint256 baseQuoteAmount = (amount * (10 ** quoteDecimals)) / TradingConstants.AMOUNT_DECIMALS;
+                amountToCollect = (baseQuoteAmount * (TradingConstants.FEE_BASE + TradingConstants.FEE_RATE)) / TradingConstants.FEE_BASE;
+            } else {
+                // 限价买单
+                uint256 baseQuoteAmount = (price * amount * (10 ** quoteDecimals)) / (TradingConstants.PRICE_DECIMALS * TradingConstants.AMOUNT_DECIMALS);
+                amountToCollect = (baseQuoteAmount * (TradingConstants.FEE_BASE + TradingConstants.FEE_RATE)) / TradingConstants.FEE_BASE;
+            }
+        }
+
+        // 从用户锁定余额转移到协议费用
+        if (amountToCollect > 0 && balances[user][tokenToCollect].locked >= amountToCollect) {
+            balances[user][tokenToCollect].locked -= amountToCollect;
+            collectedFees[tokenToCollect] += amountToCollect;
+
+            emit FundsUnlocked(user, tokenToCollect, amountToCollect, orderId);
+        }
+    }
 }

@@ -5,6 +5,10 @@ libs = ["lib"]
 test = "test"
 cache_path = "cache_forge"
 
+# 忽略 node_modules 中的 Solidity 文件
+ignored_error_codes = [1878, 5574]
+ignored_warnings_from = ["node_modules"]
+
 # Solc 版本
 solc = "0.8.20"
 
@@ -24,3 +28,14 @@ gas_reports = ["*"]
 
 # 文件系统权限 - 允许脚本写入 deployments.json
 fs_permissions = [{ access = "read-write", path = "./deployments.json" }]
+
+# RPC 端点配置
+[rpc_endpoints]
+localhost = "http://127.0.0.1:8545"
+sepolia = "${SEPOLIA_RPC_URL}"
+mainnet = "${MAINNET_RPC_URL}"
+
+# Etherscan 验证配置
+[etherscan]
+sepolia = { key = "${ETHERSCAN_API_KEY}", url = "https://api-sepolia.etherscan.io/api" }
+mainnet = { key = "${ETHERSCAN_API_KEY}" }

@@ -59,9 +59,26 @@ class ContractService {
     }
   }
 
-  async getPriceLevel(levelId) {
+  /**
+   * 获取价格层级的复合 key
+   * Ask: price 本身
+   * Bid: price | (1 << 255)
+   */
+  _getPriceLevelKey(price, isAsk) {
+    if (isAsk) {
+      return price;
+    } else {
+      // price | (1 << 255) - 使用 BigInt 处理大数
+      const priceBigInt = BigInt(price);
+      const flag = BigInt(1) << BigInt(255);
+      return (priceBigInt | flag).toString();
+    }
+  }
+
+  async getPriceLevel(price, isAsk) {
     try {
-      const level = await this.orderbook.priceLevels(levelId);
+      // 使用合约的 getPriceLevel 函数，它会自动处理复合 key
+      const level = await this.orderbook.getPriceLevel(price, isAsk);
 
       return {
         price: level[0].toString(),
@@ -80,25 +97,25 @@ class ContractService {
   async getOrderBookDepth(isAsk, maxLevels = 10) {
     try {
       const pairData = await this.getTradingPairData();
-      const headLevelId = isAsk ? pairData.askHead : pairData.bidHead;
+      const headPrice = isAsk ? pairData.askHead : pairData.bidHead;
 
-      if (headLevelId === '0') {
+      if (headPrice === '0') {
         return [];
       }
 
       const levels = [];
-      let currentLevelId = headLevelId;
+      let currentPrice = headPrice;
       let count = 0;
 
-      while (currentLevelId !== '0' && count < maxLevels) {
-        const level = await this.getPriceLevel(currentLevelId);
+      while (currentPrice !== '0' && count < maxLevels) {
+        const level = await this.getPriceLevel(currentPrice, isAsk);
         levels.push({
-          levelId: currentLevelId,
+          levelId: currentPrice,
           price: level.price,
           volume: level.totalVolume,
         });
 
-        currentLevelId = level.nextPriceLevel;
+        currentPrice = level.nextPriceLevel;
         count++;
       }
 

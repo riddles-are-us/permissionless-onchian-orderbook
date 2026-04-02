@@ -171,7 +171,7 @@ contract VerifyAskOrderInsertion is Script {
         uint256 maxLevels = 10;
 
         while (currentPrice > 0 && levelCount < maxLevels) {
-            OrderBook.PriceLevel memory level = OrderBook(orderbook).getPriceLevel(currentPrice, true);
+            OrderBook.PriceLevel memory level = OrderBook(orderbook).getPriceLevel(pairId, currentPrice, true);
 
             console.log(unicode"  Level", levelCount + 1, ":");
             console.log("    Price:", currentPrice / 10**8);

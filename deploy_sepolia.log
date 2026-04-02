@@ -1,0 +1,72 @@
+No files changed, compilation skipped
+Script ran successfully.
+
+== Logs ==
+  Deploying contracts with address: 0xB3C259f1235A50Bd0B8aA2E588648c106F6F3816
+  Deployer balance: 2731109513171046609
+  
+=== Deploying Tokens ===
+  WETH deployed at: 0x00dbCce71608a2ce8f429ff6e71Cb6F512DcA931
+  USDC deployed at: 0xA6A5DC1fdb740Af5922F6D4452724397850B5a7B
+  
+=== Deploying Account ===
+  Account deployed at: 0x0fc28F3D6b8395a618C8fe8290cC5A680f0662dB
+  
+=== Deploying OrderBook ===
+  OrderBook deployed at: 0x8e627Fc5D660D327C7e24465EB44430cf3e9Cf58
+  
+=== Deploying Sequencer ===
+  Sequencer deployed at: 0xBAA2D96a3CE32EECdecCDF02136654cF01c06776
+  
+=== Configuring Contracts ===
+  Account.setOrderBook() called
+  Account.setSequencer() called
+  OrderBook.setSequencer() called
+  OrderBook.setAccount() called
+  Sequencer.setAccount() called
+  Sequencer.setOrderBook() called
+  
+=== Registering Trading Pair ===
+  Trading pair WETH/USDC registered
+  
+=== Deployment Summary ===
+  WETH:      0x00dbCce71608a2ce8f429ff6e71Cb6F512DcA931
+  USDC:      0xA6A5DC1fdb740Af5922F6D4452724397850B5a7B
+  Account:   0x0fc28F3D6b8395a618C8fe8290cC5A680f0662dB
+  OrderBook: 0x8e627Fc5D660D327C7e24465EB44430cf3e9Cf58
+  Sequencer: 0xBAA2D96a3CE32EECdecCDF02136654cF01c06776
+  Pair ID:   0xe3fd74b5016b57bf4180a8d977a55d749f0f8f76be8d457de0768c85a6acc816
+  
+Deployment addresses saved to deployments.json
+
+## Setting up 1 EVM.
+
+==========================
+
+Chain 11155111
+
+Estimated gas price: 0.001000012 gwei
+
+Estimated total gas used for script: 8974296
+
+Estimated amount required: 0.000008974403691552 ETH
+
+==========================
+
+
+==========================
+
+ONCHAIN EXECUTION COMPLETE & SUCCESSFUL.
+##
+Start verification for (5) contracts
+Error: Failed to verify contract: environment variable `ETHERSCAN_API_KEY` not found; environment variable not found
+Error: Failed to verify contract: environment variable `ETHERSCAN_API_KEY` not found; environment variable not found
+Error: Failed to verify contract: environment variable `ETHERSCAN_API_KEY` not found; environment variable not found
+Error: Failed to verify contract: environment variable `ETHERSCAN_API_KEY` not found; environment variable not found
+Error: Failed to verify contract: environment variable `ETHERSCAN_API_KEY` not found; environment variable not found
+
+Transactions saved to: /mnt/d/Dev/permissionless-ord-book/permissionless-onchian-orderbook/broadcast/Deploy.s.sol/11155111/run-latest.json
+
+Sensitive values saved to: /mnt/d/Dev/permissionless-ord-book/permissionless-onchian-orderbook/cache_forge/Deploy.s.sol/11155111/run-latest.json
+
+Error: Not all (0 / 5) contracts were verified!

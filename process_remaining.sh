@@ -11,7 +11,7 @@ for i in $(seq 6 13); do
   prev=$((i-1))
   echo "处理请求 $i..."
   cast send $ORDERBOOK "batchProcessRequests(uint256[],uint256[],uint256[])" "[$i]" "[$prev]" "[0]" \
-    --private-key $PK --rpc-url $RPC --gas-limit 5000000 > /dev/null 2>&1
+    --private-key $PK --rpc-url $RPC --gas-limit 15000000 > /dev/null 2>&1
   if [ $? -eq 0 ]; then
     echo "  ✓ 成功"
   else
@@ -24,7 +24,7 @@ for i in $(seq 14 23); do
   prev=$((i-1))
   echo "处理请求 $i..."
   cast send $ORDERBOOK "batchProcessRequests(uint256[],uint256[],uint256[])" "[$i]" "[$prev]" "[0]" \
-    --private-key $PK --rpc-url $RPC --gas-limit 5000000 > /dev/null 2>&1
+    --private-key $PK --rpc-url $RPC --gas-limit 15000000 > /dev/null 2>&1
   if [ $? -eq 0 ]; then
     echo "  ✓ 成功"
   else
@@ -37,7 +37,7 @@ done
 # 先简单地用0试试（插入到头部）
 echo "处理卖单 24..."
 cast send $ORDERBOOK "batchProcessRequests(uint256[],uint256[],uint256[])" "[24]" "[0]" "[0]" \
-  --private-key $PK --rpc-url $RPC --gas-limit 5000000 > /dev/null 2>&1
+  --private-key $PK --rpc-url $RPC --gas-limit 15000000 > /dev/null 2>&1
 if [ $? -eq 0 ]; then
   echo "  ✓ 成功"
 else
@@ -46,7 +46,7 @@ fi
 
 echo "处理卖单 25..."
 cast send $ORDERBOOK "batchProcessRequests(uint256[],uint256[],uint256[])" "[25]" "[14]" "[0]" \
-  --private-key $PK --rpc-url $RPC --gas-limit 5000000 > /dev/null 2>&1
+  --private-key $PK --rpc-url $RPC --gas-limit 15000000 > /dev/null 2>&1
 if [ $? -eq 0 ]; then
   echo "  ✓ 成功"
 else
@@ -55,7 +55,7 @@ fi
 
 echo "处理卖单 26..."
 cast send $ORDERBOOK "batchProcessRequests(uint256[],uint256[],uint256[])" "[26]" "[15]" "[0]" \
-  --private-key $PK --rpc-url $RPC --gas-limit 5000000 > /dev/null 2>&1
+  --private-key $PK --rpc-url $RPC --gas-limit 15000000 > /dev/null 2>&1
 if [ $? -eq 0 ]; then
   echo "  ✓ 成功"
 else
