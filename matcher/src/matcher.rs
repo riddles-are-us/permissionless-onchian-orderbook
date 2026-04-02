@@ -12,6 +12,7 @@ use tracing::{debug, error, info, warn};
 pub struct MatchingEngine {
     config: Config,
     state: GlobalState,
+    provider: Arc<Provider<Ws>>,
     orderbook: OrderBook<SignerMiddleware<Arc<Provider<Ws>>, LocalWallet>>,
     wallet: LocalWallet,
 }
@@ -44,6 +45,7 @@ impl MatchingEngine {
         Ok(Self {
             config,
             state,
+            provider,
             orderbook,
             wallet,
         })
@@ -65,9 +67,43 @@ impl MatchingEngine {
         // 重新创建 OrderBook 合约实例
         let orderbook_addr: Address = self.config.contracts.orderbook.parse()?;
         self.orderbook = OrderBook::new(orderbook_addr, Arc::new(client));
+        self.provider = provider;
 
         info!("✅ WebSocket reconnected successfully");
         Ok(())
+    }
+
+    fn configured_gas_price_wei(&self) -> U256 {
+        U256::from(self.config.executor.gas_price_gwei) * U256::from(1_000_000_000u64)
+    }
+
+    fn effective_gas_price_wei(configured_gas_price: U256, base_fee: Option<U256>) -> U256 {
+        const MIN_PRIORITY_FEE_WEI: u64 = 1_000_000_000;
+
+        match base_fee {
+            Some(base_fee) => configured_gas_price.max(base_fee + U256::from(MIN_PRIORITY_FEE_WEI)),
+            None => configured_gas_price,
+        }
+    }
+
+    async fn current_gas_price_wei(&self) -> Result<U256> {
+        let configured_gas_price = self.configured_gas_price_wei();
+        let latest_block = self.provider.get_block(BlockNumber::Latest).await?;
+        let base_fee = latest_block.and_then(|block| block.base_fee_per_gas);
+        let gas_price = Self::effective_gas_price_wei(configured_gas_price, base_fee);
+
+        if let Some(base_fee) = base_fee {
+            if gas_price > configured_gas_price {
+                info!(
+                    "⛽ Adjusted gas price for base fee: configured={}, base_fee={}, effective={}",
+                    configured_gas_price,
+                    base_fee,
+                    gas_price
+                );
+            }
+        }
+
+        Ok(gas_price)
     }
 
     /// 检查错误是否为 WebSocket 连接错误
@@ -202,11 +238,13 @@ impl MatchingEngine {
                 has_limit, has_market
             );
 
+            let gas_price = self.current_gas_price_wei().await?;
+
             // 调用 matchAll
             let tx = self
                 .orderbook
                 .match_all(*trading_pair, max_iterations)
-                .gas_price(self.config.executor.gas_price_gwei * 1_000_000_000)
+                .gas_price(gas_price)
                 .gas(self.config.executor.gas_limit);
 
             let pending_tx = tx.send().await.context("Failed to send matchAll transaction")?;
@@ -412,6 +450,8 @@ impl MatchingEngine {
             );
         }
 
+        let gas_price = self.current_gas_price_wei().await?;
+
         // 调用合约的 batchProcessRequests 函数
         let tx = self
             .orderbook
@@ -420,7 +460,7 @@ impl MatchingEngine {
                 match_result.insert_after_price_levels.clone(),
                 match_result.insert_after_orders.clone(),
             )
-            .gas_price(self.config.executor.gas_price_gwei * 1_000_000_000)
+            .gas_price(gas_price)
             .gas(self.config.executor.gas_limit);
 
         // 先尝试 estimate gas 来检查是否会 revert
@@ -480,5 +520,34 @@ impl MatchingEngine {
         // 这样可以保证状态与链上一致
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MatchingEngine;
+    use ethers::types::U256;
+
+    #[test]
+    fn effective_gas_price_uses_configured_value_without_base_fee() {
+        let configured = U256::from(1_000_000_000u64);
+        let effective = MatchingEngine::effective_gas_price_wei(configured, None);
+        assert_eq!(effective, configured);
+    }
+
+    #[test]
+    fn effective_gas_price_rises_above_base_fee_when_needed() {
+        let configured = U256::from(1_000_000_000u64);
+        let base_fee = U256::from(1_197_118_369u64);
+        let effective = MatchingEngine::effective_gas_price_wei(configured, Some(base_fee));
+        assert_eq!(effective, U256::from(2_197_118_369u64));
+    }
+
+    #[test]
+    fn effective_gas_price_keeps_higher_configured_value() {
+        let configured = U256::from(5_000_000_000u64);
+        let base_fee = U256::from(1_197_118_369u64);
+        let effective = MatchingEngine::effective_gas_price_wei(configured, Some(base_fee));
+        assert_eq!(effective, configured);
     }
 }
